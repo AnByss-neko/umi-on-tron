@@ -388,11 +388,20 @@ class EventCfg:
         },
     )
 
-    reset_robot_joints = EventTerm(
-        func=mdp.reset_joints_by_offset,
+    reset_tron_joints = EventTerm(
+        func=mdp.reset_selected_joints_by_offset,
         mode="reset",
         params={
-            # Randomize every joint around its configured default position.
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=[
+                    "abad_[RL]_Joint",
+                    "hip_[RL]_Joint",
+                    "knee_[RL]_Joint",
+                    "ankle_[RL]_Joint",
+                ],
+            ),
+            # Randomize only the TRON leg and ankle joints.
             "position_range": (-0.2, 0.2),
             "velocity_range": (-0.2, 0.2),
         },
@@ -694,8 +703,8 @@ class LimxEEposeRoughEnvCfg_PLAY(LimxEEposeRoughEnvCfg):
             "x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0),
             "roll": (0.0, 0.0), "pitch": (0.0, 0.0), "yaw": (0.0, 0.0),
         }
-        self.events.reset_robot_joints.params["position_range"] = (0.0, 0.0)
-        self.events.reset_robot_joints.params["velocity_range"] = (0.0, 0.0)
+        self.events.reset_tron_joints.params["position_range"] = (0.0, 0.0)
+        self.events.reset_tron_joints.params["velocity_range"] = (0.0, 0.0)
 
         # only end episodes on time_out (= trajectory complete); disable all other
         # terminations that would interrupt trajectory playback mid-way
@@ -741,8 +750,8 @@ class LimxEEposeCommandEnvCfg_PLAY(LimxEEposeRoughEnvCfg):
             "x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0),
             "roll": (0.0, 0.0), "pitch": (0.0, 0.0), "yaw": (0.0, 0.0),
         }
-        self.events.reset_robot_joints.params["position_range"] = (0.0, 0.0)
-        self.events.reset_robot_joints.params["velocity_range"] = (0.0, 0.0)
+        self.events.reset_tron_joints.params["position_range"] = (0.0, 0.0)
+        self.events.reset_tron_joints.params["velocity_range"] = (0.0, 0.0)
 
         # keep the fixed-command play running until the user closes the app.
         del self.terminations.base_contact
