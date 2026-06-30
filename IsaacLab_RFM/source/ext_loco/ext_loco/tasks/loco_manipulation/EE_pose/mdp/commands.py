@@ -132,7 +132,7 @@ class UniformWorldPoseCommand(UniformPoseCommand):
         self.metrics["orientation_error"] = rot_error_angle
 
         self.se3_distance_ref[env_ids] = (
-            2 * self.metrics["position_error"][env_ids] + self.metrics["orientation_error"][env_ids]
+            3 * self.metrics["position_error"][env_ids] + self.metrics["orientation_error"][env_ids]
         )
         self.optim_pos_distance[env_ids] = self.metrics["position_error"][env_ids]
         self.optim_orient_distance[env_ids] = self.metrics["orientation_error"][env_ids]
