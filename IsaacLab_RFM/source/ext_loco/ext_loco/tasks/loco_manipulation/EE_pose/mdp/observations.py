@@ -13,18 +13,6 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv
 
 
-def applied_last_action(
-    env: ManagerBasedEnv, action_name: str = "joint_pos"
-) -> torch.Tensor:
-    """Return the action that remains after target slew limiting."""
-    action_term = env.action_manager.get_term(action_name)
-    if not hasattr(action_term, "applied_actions"):
-        raise TypeError(
-            f"Action term '{action_name}' does not expose applied_actions"
-        )
-    return action_term.applied_actions
-
-
 def joint_torque(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """The joint torques of the asset."""
     # extract the used quantities (to enable type-hinting)
