@@ -62,6 +62,19 @@ JOINT_NAMES = (
     "J5",
     "J6",
 )
+LEG_NAMES = (
+    "abad_L_Joint",
+    "hip_L_Joint",
+    "knee_L_Joint",
+    "ankle_L_Joint",
+    "abad_R_Joint",
+    "hip_R_Joint",
+    "knee_R_Joint",
+    "ankle_R_Joint",
+)
+ARM_NAMES = ("J1", "J2", "J3", "J4", "J5", "J6")
+LEG_IDS = np.array([JOINT_NAMES.index(name) for name in LEG_NAMES], dtype=int)
+ARM_IDS = np.array([JOINT_NAMES.index(name) for name in ARM_NAMES], dtype=int)
 DEFAULT_JOINT_POS = np.array(
     [0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     dtype=np.float64,
@@ -91,6 +104,14 @@ HISTORY_LENGTH = 10
 OBS_DIM = 65
 CONTACT_OBS_DIM = 55
 ACTION_DIM = 14
+
+
+def format_named(names: tuple[str, ...], values: np.ndarray) -> str:
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    return " ".join(
+        f"{name}={values[index]: .4f}"
+        for index, name in enumerate(names[: values.size])
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -184,6 +205,23 @@ def parse_args() -> argparse.Namespace:
         help="Disable the XY centering used by IsaacLab PicklePoseSequenceCommand.",
     )
     parser.add_argument("--log-interval", type=float, default=1.0)
+    parser.add_argument(
+        "--leg-debug",
+        action="store_true",
+        help="Print leg q, raw/effective actions, desired/cmd positions, command step, and tracking error.",
+    )
+    parser.add_argument(
+        "--arm-max-step",
+        type=float,
+        default=0.0,
+        help="Maximum arm target-position change per 50 Hz policy update in radians; 0 disables it.",
+    )
+    parser.add_argument(
+        "--max-leg-step",
+        type=float,
+        default=0.0,
+        help="Maximum leg target-position change per 50 Hz policy update in radians; 0 disables it.",
+    )
     return parser.parse_args()
 
 
@@ -600,6 +638,8 @@ class Sim2Sim:
         command: np.ndarray,
         command_frame: str,
         base_height: float,
+        arm_max_step: float,
+        max_leg_step: float,
     ):
         self.model = model
         self.data = mujoco.MjData(model)
@@ -607,6 +647,12 @@ class Sim2Sim:
         self.command_frame = command_frame
         self.target_position = command[:3].copy()
         self.target_rotation = rotation_from_rpy(*command[3:])
+        if not math.isfinite(arm_max_step) or arm_max_step < 0.0:
+            raise ValueError("--arm-max-step must be finite and non-negative")
+        if not math.isfinite(max_leg_step) or max_leg_step < 0.0:
+            raise ValueError("--max-leg-step must be finite and non-negative")
+        self.arm_max_step = float(arm_max_step)
+        self.max_leg_step = float(max_leg_step)
 
         self.joint_qpos_adr = np.array([model.joint(name).qposadr[0] for name in JOINT_NAMES], dtype=int)
         self.joint_dof_adr = np.array([model.joint(name).dofadr[0] for name in JOINT_NAMES], dtype=int)
@@ -645,8 +691,14 @@ class Sim2Sim:
         mujoco.mj_forward(model, self.data)
 
         self.raw_action = np.zeros(ACTION_DIM, dtype=np.float64)
+        self.effective_action = np.zeros(ACTION_DIM, dtype=np.float64)
         self.last_action = np.zeros(ACTION_DIM, dtype=np.float64)
         self.last_torque = np.zeros(ACTION_DIM, dtype=np.float64)
+        self.raw_desired_position = DEFAULT_JOINT_POS.copy()
+        self.policy_desired_position = DEFAULT_JOINT_POS.copy()
+        self.desired_position = DEFAULT_JOINT_POS.copy()
+        self.policy_command_step = np.zeros(ACTION_DIM, dtype=np.float64)
+        self._previous_policy_command = DEFAULT_JOINT_POS.copy()
         self.history: deque[np.ndarray] = deque(maxlen=HISTORY_LENGTH)
         self.se3_distance_reference = self._initial_se3_distance()
         first_contact_obs = self.contact_observation()
@@ -784,25 +836,48 @@ class Sim2Sim:
         self.raw_action = self.policy(self.policy_observation(), history)
         self.se3_distance_reference = max(0.0, self.se3_distance_reference - POLICY_DT)
 
-    def apply_pd(self) -> None:
+    def apply_pd(self, *, policy_updated: bool = False) -> None:
         position, velocity = self.joint_state()
-        # Same torque-aware action clamp used by SolefootController.cpp.
-        action_min = position - DEFAULT_JOINT_POS + (KD * velocity - TORQUE_LIMIT) / KP
-        action_max = position - DEFAULT_JOINT_POS + (KD * velocity + TORQUE_LIMIT) / KP
-        effective_action = np.clip(self.raw_action, action_min, action_max)
-        desired_position = DEFAULT_JOINT_POS + effective_action
-        torque = KP * (desired_position - position) - KD * velocity
+        if policy_updated:
+            # Same torque-aware action clamp used by SolefootController.cpp.
+            action_min = position - DEFAULT_JOINT_POS + (KD * velocity - TORQUE_LIMIT) / KP
+            action_max = position - DEFAULT_JOINT_POS + (KD * velocity + TORQUE_LIMIT) / KP
+            self.effective_action = np.clip(self.raw_action, action_min, action_max)
+            self.raw_desired_position = DEFAULT_JOINT_POS + self.raw_action
+            self.policy_desired_position = DEFAULT_JOINT_POS + self.effective_action
+
+            command = self.policy_desired_position.copy()
+            if self.arm_max_step > 0.0:
+                command[ARM_IDS] = np.clip(
+                    command[ARM_IDS],
+                    self._previous_policy_command[ARM_IDS] - self.arm_max_step,
+                    self._previous_policy_command[ARM_IDS] + self.arm_max_step,
+                )
+            if self.max_leg_step > 0.0:
+                command[LEG_IDS] = np.clip(
+                    command[LEG_IDS],
+                    self._previous_policy_command[LEG_IDS] - self.max_leg_step,
+                    self._previous_policy_command[LEG_IDS] + self.max_leg_step,
+                )
+            self.desired_position = command
+            self.policy_command_step = command - self._previous_policy_command
+            self._previous_policy_command = command.copy()
+            # The policy observes the command that was actually applied, just
+            # like record_applied_targets() in the real deployment script.
+            self.last_action = command - DEFAULT_JOINT_POS
+
+        torque = KP * (self.desired_position - position) - KD * velocity
         torque = np.clip(torque, -TORQUE_LIMIT, TORQUE_LIMIT)
 
         self.data.ctrl[:] = 0.0
         self.data.ctrl[self.motor_ids] = torque
-        self.last_action = effective_action
         self.last_torque = torque
 
     def step(self, physics_step: int) -> None:
-        if physics_step % POLICY_DECIMATION == 0:
+        policy_updated = physics_step % POLICY_DECIMATION == 0
+        if policy_updated:
             self.infer()
-        self.apply_pd()
+        self.apply_pd(policy_updated=policy_updated)
         mujoco.mj_step(self.model, self.data)
         self._update_target_marker()
         if not np.isfinite(self.data.qpos).all() or not np.isfinite(self.data.qvel).all():
@@ -864,6 +939,11 @@ def run(args: argparse.Namespace) -> None:
         f"({command_frame}): xyz={command[:3].tolist()}, "
         f"rpy={command[3:].tolist()} rad"
     )
+    print(
+        "[sim2sim] 50Hz目标限幅："
+        f"arm_max_step={args.arm_max_step:g} rad，"
+        f"max_leg_step={args.max_leg_step:g} rad（0=关闭）"
+    )
     if trajectory is not None:
         print(
             f"[trajectory] file={trajectory.path}, episode={trajectory.episode_index}, "
@@ -874,7 +954,15 @@ def run(args: argparse.Namespace) -> None:
 
     model = load_sim_model(args.mjcf)
     policy = ThreeOnnxPolicy(model_dir, args.sample_latent, rng)
-    simulation = Sim2Sim(model, policy, command, command_frame, args.base_height)
+    simulation = Sim2Sim(
+        model,
+        policy,
+        command,
+        command_frame,
+        args.base_height,
+        args.arm_max_step,
+        args.max_leg_step,
+    )
     keyboard = KeyboardTargetController(args.keyboard_step)
 
     if args.duration is None:
@@ -950,6 +1038,29 @@ def run(args: argparse.Namespace) -> None:
                     f"EE误差={pos_error:6.3f}m/{rot_error:6.3f}rad  "
                     f"|action|max={np.max(np.abs(simulation.last_action)):6.3f}"
                 )
+                if args.leg_debug:
+                    joint_position, _ = simulation.joint_state()
+                    leg_q = joint_position[LEG_IDS]
+                    leg_actor_raw = simulation.raw_action[LEG_IDS]
+                    leg_action = simulation.effective_action[LEG_IDS]
+                    leg_desired = simulation.policy_desired_position[LEG_IDS]
+                    leg_cmd = simulation.desired_position[LEG_IDS]
+                    print(f"leg_q={format_named(LEG_NAMES, leg_q)}")
+                    print(
+                        "leg_actor_raw="
+                        f"{format_named(LEG_NAMES, leg_actor_raw)}"
+                    )
+                    print(f"leg_action={format_named(LEG_NAMES, leg_action)}")
+                    print(f"leg_desired={format_named(LEG_NAMES, leg_desired)}")
+                    print(f"leg_cmd={format_named(LEG_NAMES, leg_cmd)}")
+                    print(
+                        "leg_cmd_step="
+                        f"{format_named(LEG_NAMES, simulation.policy_command_step[LEG_IDS])}"
+                    )
+                    print(
+                        "leg_track_error="
+                        f"{format_named(LEG_NAMES, leg_cmd - leg_q)}"
+                    )
                 last_log_wall = now
                 last_log_sim = simulation.data.time
                 viewer_sync_count = 0
