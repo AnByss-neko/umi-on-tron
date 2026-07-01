@@ -168,8 +168,25 @@ class CommandsCfgCommandPlay:
 class ActionsCfg:
     """Action specifications for the MDP."""
 
-    joint_pos = mdp.JointPositionActionCfg(asset_name="robot", joint_names=["abad_[RL]_Joint","hip_[RL]_Joint","knee_[RL]_Joint","ankle_[RL]_Joint","J.*"], 
-                                           scale=1.0, use_default_offset=True)
+    joint_pos = mdp.RateLimitedJointPositionActionCfg(
+        asset_name="robot",
+        joint_names=[
+            "abad_[RL]_Joint",
+            "hip_[RL]_Joint",
+            "knee_[RL]_Joint",
+            "ankle_[RL]_Joint",
+            "J.*",
+        ],
+        scale=1.0,
+        use_default_offset=True,
+        leg_joint_names=[
+            "abad_[RL]_Joint",
+            "hip_[RL]_Joint",
+            "knee_[RL]_Joint",
+            "ankle_[RL]_Joint",
+        ],
+        max_leg_step=0.4,
+    )
     # joint_vel = mdp.JointVelocityActionCfg(asset_name="robot", joint_names=["wheel_[RL]_Joint"], 
     #                                        scale=5.0, use_default_offset=True)
     # joint_pos_ankle = mdp.JointPositionActionCfg(asset_name="robot", joint_names=["ankle_[RL]_Joint"], 
@@ -204,7 +221,10 @@ class ObservationsCfg:
         )  # 12 dim
         
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5)) # 14 dim
-        actions = ObsTerm(func=mdp.last_action) # 14 dim
+        actions = ObsTerm(
+            func=mdp.applied_last_action,
+            params={"action_name": "joint_pos"},
+        ) # 14 dim
         # height_scan = ObsTerm(
         #     func=mdp.height_scan,
         #     params={"sensor_cfg": SceneEntityCfg("height_scanner")},
