@@ -160,7 +160,7 @@ def track_EE_reference_exp(
     EE_orientation_error = env.command_manager.get_term(command_name).metrics["orientation_error"]
     se3_distance_ref = env.command_manager.get_term("EE_pose").se3_distance_ref
 
-    track_error = torch.abs(se3_distance_ref - EE_orientation_error - 3 * EE_position_error) - relese_delta
+    track_error = torch.abs(se3_distance_ref - EE_orientation_error - 2 * EE_position_error) - relese_delta
 
     track_error = torch.clamp(track_error, min=0.0)
 
