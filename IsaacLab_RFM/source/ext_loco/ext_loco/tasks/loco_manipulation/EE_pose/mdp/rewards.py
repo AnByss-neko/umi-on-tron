@@ -352,16 +352,17 @@ def body_ee_alignment(env: ManagerBasedRLEnv, joint_names: list[str] = ("J1", "J
     return torch.sum(diff.abs(), dim=1)
 
 
-def base_heading_target_alignment(
+def base_bidirectional_target_alignment(
     env: ManagerBasedRLEnv,
     command_name: str = "EE_pose",
     min_target_distance: float = 0.1,
 ) -> torch.Tensor:
-    """Penalize base heading that does not face the horizontal EE-target direction.
+    """Align the base longitudinal axis with the horizontal EE-target direction.
 
-    The penalty is ``1 - cos(heading_error)``: zero when facing the target,
-    one when side-on, and two when facing directly away. It is active mainly
-    during the locomotion phase through ``_loco_mani_scale``.
+    At command sampling, a target in the front half-plane is assigned +1 and
+    one in the rear half-plane -1. The fixed mode produces the penalty
+    ``1 - direction * cos(heading_error)``. Rear targets therefore favor
+    backward walking and penalize a later 180-degree turn.
     """
     asset: Articulation = env.scene["robot"]
     command = env.command_manager.get_term(command_name)
@@ -379,7 +380,7 @@ def base_heading_target_alignment(
     ).clamp_min(1.0e-6).unsqueeze(1)
 
     heading_cosine = torch.sum(base_forward_xy * target_direction, dim=1).clamp(-1.0, 1.0)
-    penalty = 1.0 - heading_cosine
+    penalty = 1.0 - command.travel_direction * heading_cosine
     valid_target = (target_distance >= min_target_distance).float()
     return penalty * valid_target * env._loco_mani_scale
 

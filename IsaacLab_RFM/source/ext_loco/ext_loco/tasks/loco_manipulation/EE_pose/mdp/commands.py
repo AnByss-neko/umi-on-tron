@@ -87,6 +87,10 @@ class UniformWorldPoseCommand(UniformPoseCommand):
         self.optim_orient_distance = torch.zeros(self.num_envs, device=self.device)
         self.pos_improvement = torch.zeros(self.num_envs, device=self.device)
         self.orient_improvement = torch.zeros(self.num_envs, device=self.device)
+        # +1 means approach with the base front; -1 means approach in reverse.
+        # The mode is fixed when a command is sampled so turning 180 degrees
+        # cannot change a rear target into a forward-walking target.
+        self.travel_direction = torch.ones(self.num_envs, device=self.device)
 
     def _refresh_pose_command_b(self):
         """Refresh pose_command_b by transforming world-frame command into robot base frame."""
@@ -96,6 +100,15 @@ class UniformWorldPoseCommand(UniformPoseCommand):
         )
         self.pose_command_b[:, 3:] = quat_unique(
             quat_mul(quat_inv(self.robot.data.root_link_quat_w), self.pose_command_w[:, 3:])
+        )
+
+    def _set_travel_direction(self, env_ids: Sequence[int]):
+        """Choose forward for the initial front half-plane and reverse for the rear."""
+        self._refresh_pose_command_b()
+        self.travel_direction[env_ids] = torch.where(
+            self.pose_command_b[env_ids, 0] >= 0.0,
+            1.0,
+            -1.0,
         )
 
     def _update_metrics(self):
@@ -153,6 +166,7 @@ class UniformWorldPoseCommand(UniformPoseCommand):
         self.decrease_vel[env_ids] = sample_uniform(
             self.decrease_vel_range[0], self.decrease_vel_range[1], len(env_ids), device=self.device
         )
+        self._set_travel_direction(env_ids)
 
     def _resample(self, env_ids):
         if len(env_ids) != 0:
@@ -271,6 +285,7 @@ class PicklePoseSequenceCommand(UniformWorldPoseCommand):
             )
             self._need_origin_update[update_ids] = False
             self._update_command_w(update_ids.tolist())
+            self._set_travel_direction(update_ids)
 
         self._update_command_w(range(self.num_envs))
         # Parent handles metric updates and time_left countdown
@@ -338,6 +353,7 @@ class PicklePoseSequenceCommand(UniformWorldPoseCommand):
         self._need_origin_update[env_ids] = True
         # Initialize command immediately so metrics/time_left use fresh targets
         self._update_command_w(env_ids)
+        self._set_travel_direction(env_ids)
 
 
 @configclass

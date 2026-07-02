@@ -520,8 +520,8 @@ class RewardsCfg:
         weight=-1.5,
         params={"joint_names": ["J1", "J5"]},
     )
-    base_heading_target_alignment = RewTerm(
-        func=mdp.base_heading_target_alignment,
+    base_bidirectional_target_alignment = RewTerm(
+        func=mdp.base_bidirectional_target_alignment,
         weight=-2.0,
         params={"command_name": "EE_pose", "min_target_distance": 0.1},
     )
