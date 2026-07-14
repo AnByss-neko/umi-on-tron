@@ -14,10 +14,14 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import pickle
+import select
 import sys
+import termios
 import threading
 import time
+import tty
 import xml.etree.ElementTree as ET
 from collections import deque
 from pathlib import Path
@@ -104,6 +108,20 @@ HISTORY_LENGTH = 10
 OBS_DIM = 65
 CONTACT_OBS_DIM = 55
 ACTION_DIM = 14
+SIM_GRIPPER_MAX_ANGLE = 0.925
+SIM_GRIPPER_JOINT_NAMES = (
+    "assembly_DAS_Controller_V3_with_flange_joint1",
+    "assembly_DAS_Controller_V3_with_flange_joint2",
+    "assembly_DAS_Controller_V3_with_flange_joint3",
+    "assembly_DAS_Controller_V3_with_flange_joint4",
+    "assembly_DAS_Controller_V3_with_flange_joint5",
+    "assembly_DAS_Controller_V3_with_flange_joint6",
+)
+SIM_GRIPPER_JOINT_MULTIPLIERS = np.array(
+    [1.0, -1.0, -1.0, 1.0, 1.0, -1.0],
+    dtype=np.float64,
+)
+SIM_GRIPPER_ACTUATOR_NAME = "sim_gripper_position"
 
 
 def format_named(names: tuple[str, ...], values: np.ndarray) -> str:
@@ -435,6 +453,44 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
             {"diffuse": "0.7 0.7 0.7", "ambient": "0.25 0.25 0.25", "specular": "0.2 0.2 0.2"},
         )
 
+    # Procedural blue checkerboard matching the familiar MuJoCo grid floor.
+    # It lives only in the in-memory model, so the source robot MJCF remains
+    # reusable by deployments that do not want this viewer styling.
+    asset = root.find("asset")
+    if asset is None:
+        asset = ET.Element("asset")
+        worldbody_index = next(
+            (index for index, element in enumerate(root) if element.tag == "worldbody"),
+            len(root),
+        )
+        root.insert(worldbody_index, asset)
+    ET.SubElement(
+        asset,
+        "texture",
+        {
+            "name": "sim2sim_checker_texture",
+            "type": "2d",
+            "builtin": "checker",
+            "mark": "edge",
+            "rgb1": "0.12 0.25 0.38",
+            "rgb2": "0.24 0.42 0.58",
+            "markrgb": "0.55 0.68 0.78",
+            "width": "512",
+            "height": "512",
+        },
+    )
+    ET.SubElement(
+        asset,
+        "material",
+        {
+            "name": "sim2sim_checker_material",
+            "texture": "sim2sim_checker_texture",
+            "texrepeat": "5 5",
+            "texuniform": "true",
+            "reflectance": "0.15",
+        },
+    )
+
     worldbody = root.find("worldbody")
     if worldbody is None:
         raise ValueError("MJCF has no worldbody")
@@ -446,7 +502,7 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
                 "name": "sim2sim_floor",
                 "type": "plane",
                 "size": "0 0 0.1",
-                "rgba": "0.32 0.35 0.38 1",
+                "material": "sim2sim_checker_material",
                 "friction": "0.8 0.6 0.001",
                 "condim": "3",
                 "solref": "0.005 1",
@@ -461,6 +517,102 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
             {"name": "sim2sim_light", "pos": "0 -1 3", "dir": "0 0 -1", "directional": "true"},
         ),
     )
+
+    # A fixed doorway with a dynamic door panel. The robot starts at the
+    # origin facing +X, so the door plane is placed in front of it at x=0.75 m.
+    contact_parameters = {
+        "friction": "0.8 0.1 0.001",
+        "condim": "3",
+        "solref": "0.005 1",
+        "solimp": "0.95 0.99 0.001",
+    }
+    for name, pos, size in (
+        ("door_frame_left", "0.75 0.93 0.73", "0.06 0.45 0.73"),
+        ("door_frame_right", "0.75 -0.93 0.73", "0.06 0.45 0.73"),
+        ("door_frame_header", "0.75 0 1.56", "0.06 0.48 0.10"),
+    ):
+        ET.SubElement(
+            worldbody,
+            "geom",
+            {
+                "name": name,
+                "type": "box",
+                "pos": pos,
+                "size": size,
+                "rgba": "0.45 0.46 0.46 1",
+                **contact_parameters,
+            },
+        )
+
+    door = ET.SubElement(
+        worldbody,
+        "body",
+        {
+            "name": "sim2sim_door",
+            "pos": "0.75 0.45 0.02",
+        },
+    )
+    ET.SubElement(
+        door,
+        "inertial",
+        {
+            "pos": "0 -0.445 0.70",
+            "mass": "8.25",
+            "diaginertia": "1.78 1.28 0.53",
+        },
+    )
+    ET.SubElement(
+        door,
+        "joint",
+        {
+            "name": "sim2sim_door_hinge",
+            "type": "hinge",
+            "axis": "0 0 1",
+            "limited": "true",
+            "range": "-1.75 1.75",
+            "damping": "1.0",
+            "frictionloss": "0.2",
+            "armature": "0.01",
+        },
+    )
+    ET.SubElement(
+        door,
+        "geom",
+        {
+            "name": "sim2sim_door_panel",
+            "type": "box",
+            "pos": "0 -0.44 0.69",
+            "size": "0.025 0.44 0.69",
+            "rgba": "0.45 0.18 0.055 1",
+            **contact_parameters,
+        },
+    )
+    ET.SubElement(
+        door,
+        "geom",
+        {
+            "name": "sim2sim_door_handle_shaft",
+            "type": "cylinder",
+            "pos": "-0.075 -0.75 1.02",
+            "quat": "0.7071068 0 0.7071068 0",
+            "size": "0.022 0.05",
+            "rgba": "0.12 0.12 0.12 1",
+            **contact_parameters,
+        },
+    )
+    ET.SubElement(
+        door,
+        "geom",
+        {
+            "name": "sim2sim_door_handle_knob",
+            "type": "sphere",
+            "pos": "-0.135 -0.75 1.02",
+            "size": "0.032",
+            "rgba": "0.12 0.12 0.12 1",
+            **contact_parameters,
+        },
+    )
+
     # A collision-free mocap body renders the full target pose instead of only
     # a position sphere. Local +X/+Y/+Z are red/green/blue respectively.
     target_frame = ET.Element(
@@ -512,6 +664,93 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
             },
         )
     worldbody.insert(2, target_frame)
+
+    # The checked-in MJCF locks the DAS gripper. Restore the six revolute
+    # joints; joint 1 is driven and joints 2-6 follow its mimic ratios.
+    gripper_joint_specs = (
+        ("assembly_DAS_Controller_V3_with_flange_link1", SIM_GRIPPER_JOINT_NAMES[0], 0.0, 0.925),
+        ("assembly_DAS_Controller_V3_with_flange_link2", SIM_GRIPPER_JOINT_NAMES[1], -0.925, 0.0),
+        ("assembly_DAS_Controller_V3_with_flange_link3", SIM_GRIPPER_JOINT_NAMES[2], -0.925, 0.0),
+        ("assembly_DAS_Controller_V3_with_flange_link4", SIM_GRIPPER_JOINT_NAMES[3], 0.0, 0.925),
+        ("assembly_DAS_Controller_V3_with_flange_link5", SIM_GRIPPER_JOINT_NAMES[4], 0.0, 0.925),
+        ("assembly_DAS_Controller_V3_with_flange_link6", SIM_GRIPPER_JOINT_NAMES[5], -0.925, 0.0),
+    )
+    for body_name, joint_name, lower, upper in gripper_joint_specs:
+        body = worldbody.find(f".//body[@name='{body_name}']")
+        if body is None:
+            raise ValueError(f"Gripper body is missing from MJCF: {body_name}")
+        joint = ET.Element(
+            "joint",
+            {
+                "name": joint_name,
+                "type": "hinge",
+                "axis": "0 0 -1",
+                "limited": "true",
+                "range": f"{lower} {upper}",
+                "damping": "0.1",
+                "armature": "0.001",
+            },
+        )
+        body.insert(1 if body.find("inertial") is not None else 0, joint)
+
+    equality = root.find("equality")
+    if equality is None:
+        equality = ET.SubElement(root, "equality")
+    for joint_name, multiplier in zip(
+        SIM_GRIPPER_JOINT_NAMES[1:],
+        SIM_GRIPPER_JOINT_MULTIPLIERS[1:],
+    ):
+        ET.SubElement(
+            equality,
+            "joint",
+            {
+                "name": f"{joint_name}_mimic",
+                "joint1": joint_name,
+                "joint2": SIM_GRIPPER_JOINT_NAMES[0],
+                "polycoef": f"0 {multiplier} 0 0 0",
+                "solref": "0.002 1",
+            },
+        )
+
+    # Ignore only internal gripper contacts; the fingers can still collide
+    # with and hold objects in the scene.
+    contact = root.find("contact")
+    if contact is None:
+        contact = ET.SubElement(root, "contact")
+    gripper_bodies = (
+        "assembly_DAS_Controller_V3_with_flange",
+        "assembly_DAS_Controller_V3_with_flange_link1",
+        "assembly_DAS_Controller_V3_with_flange_link2",
+        "assembly_DAS_Controller_V3_with_flange_link3",
+        "assembly_DAS_Controller_V3_with_flange_link4",
+        "assembly_DAS_Controller_V3_with_flange_link5",
+        "assembly_DAS_Controller_V3_with_flange_link6",
+    )
+    for first_index, first_body in enumerate(gripper_bodies):
+        for second_body in gripper_bodies[first_index + 1 :]:
+            ET.SubElement(
+                contact,
+                "exclude",
+                {"body1": first_body, "body2": second_body},
+            )
+
+    actuator = root.find("actuator")
+    if actuator is None:
+        actuator = ET.SubElement(root, "actuator")
+    ET.SubElement(
+        actuator,
+        "position",
+        {
+            "name": SIM_GRIPPER_ACTUATOR_NAME,
+            "joint": SIM_GRIPPER_JOINT_NAMES[0],
+            "kp": "20",
+            "ctrllimited": "true",
+            "ctrlrange": f"0 {SIM_GRIPPER_MAX_ANGLE}",
+            "forcelimited": "true",
+            "forcerange": "-10 10",
+        },
+    )
+
     xml = ET.tostring(root, encoding="unicode")
     return mujoco.MjModel.from_xml_string(xml)
 
@@ -593,16 +832,16 @@ class ThreeOnnxPolicy:
         return np.clip(action, -100.0, 100.0)
 
 
-class KeyboardTargetController:
-    """Thread-safe target deltas produced by the MuJoCo viewer callback."""
+class TerminalKeyboardController:
+    """Read target and gripper commands directly from the launching terminal."""
 
     KEY_DELTAS = {
-        ord("W"): np.array([1.0, 0.0, 0.0]),
-        ord("S"): np.array([-1.0, 0.0, 0.0]),
-        ord("A"): np.array([0.0, 1.0, 0.0]),
-        ord("D"): np.array([0.0, -1.0, 0.0]),
-        ord("R"): np.array([0.0, 0.0, 1.0]),
-        ord("F"): np.array([0.0, 0.0, -1.0]),
+        "W": np.array([1.0, 0.0, 0.0]),
+        "S": np.array([-1.0, 0.0, 0.0]),
+        "A": np.array([0.0, 1.0, 0.0]),
+        "D": np.array([0.0, -1.0, 0.0]),
+        "R": np.array([0.0, 0.0, 1.0]),
+        "F": np.array([0.0, 0.0, -1.0]),
     }
 
     def __init__(self, step: float):
@@ -611,23 +850,78 @@ class KeyboardTargetController:
         self.step = float(step)
         self._pending_delta = np.zeros(3, dtype=np.float64)
         self._print_requested = False
+        self._gripper_command: float | None = None
+        self._quit_requested = False
         self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._fd: int | None = None
+        self._saved_terminal_settings = None
+        self._thread: threading.Thread | None = None
 
-    def callback(self, keycode: int) -> None:
-        with self._lock:
-            direction = self.KEY_DELTAS.get(keycode)
-            if direction is not None:
-                self._pending_delta += direction * self.step
-            elif keycode == ord("P"):
-                self._print_requested = True
+    def start(self) -> bool:
+        """Enter cbreak mode so each terminal key is available immediately."""
+        if not sys.stdin.isatty():
+            print("[keyboard] stdin 不是终端，已禁用实时键盘控制。")
+            return False
+        self._fd = sys.stdin.fileno()
+        self._saved_terminal_settings = termios.tcgetattr(self._fd)
+        tty.setcbreak(self._fd)
+        self._thread = threading.Thread(
+            target=self._read_loop,
+            name="sim2sim-terminal-keyboard",
+            daemon=True,
+        )
+        self._thread.start()
+        return True
 
-    def consume(self) -> tuple[np.ndarray, bool]:
+    def _read_loop(self) -> None:
+        assert self._fd is not None
+        while not self._stop.is_set():
+            try:
+                readable, _, _ = select.select([self._fd], [], [], 0.1)
+                if not readable:
+                    continue
+                raw_key = os.read(self._fd, 1)
+            except OSError:
+                break
+            if not raw_key:
+                break
+            key = raw_key.decode(errors="ignore").upper()
+            with self._lock:
+                direction = self.KEY_DELTAS.get(key)
+                if direction is not None:
+                    self._pending_delta += direction * self.step
+                elif key == "P":
+                    self._print_requested = True
+                elif key == "O":
+                    self._gripper_command = 0.0
+                elif key == "C":
+                    self._gripper_command = 1.0
+                elif key == "Q":
+                    self._quit_requested = True
+
+    def consume(self) -> tuple[np.ndarray, bool, float | None, bool]:
         with self._lock:
             delta = self._pending_delta.copy()
             print_requested = self._print_requested
+            gripper_command = self._gripper_command
+            quit_requested = self._quit_requested
             self._pending_delta.fill(0.0)
             self._print_requested = False
-        return delta, print_requested
+            self._gripper_command = None
+        return delta, print_requested, gripper_command, quit_requested
+
+    def close(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=0.5)
+        if self._fd is not None and self._saved_terminal_settings is not None:
+            termios.tcsetattr(
+                self._fd,
+                termios.TCSADRAIN,
+                self._saved_terminal_settings,
+            )
+            self._saved_terminal_settings = None
 
 
 class Sim2Sim:
@@ -662,6 +956,19 @@ class Sim2Sim:
         )
         if np.any(self.motor_ids < 0):
             raise ValueError("One or more joint motors are missing from the MJCF")
+        self.gripper_actuator_id = mujoco.mj_name2id(
+            model,
+            mujoco.mjtObj.mjOBJ_ACTUATOR,
+            SIM_GRIPPER_ACTUATOR_NAME,
+        )
+        self.gripper_joint_qpos_adr = np.array(
+            [model.joint(name).qposadr[0] for name in SIM_GRIPPER_JOINT_NAMES],
+            dtype=int,
+        )
+        if self.gripper_actuator_id < 0:
+            raise ValueError("Simulation gripper actuator is missing from the MJCF")
+        self.gripper_command = 0.0
+        self.gripper_target = 0.0
 
         self.base_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base_Link")
         self.ee_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "link6")
@@ -829,6 +1136,15 @@ class Sim2Sim:
             self.se3_distance_reference = self._initial_se3_distance()
         self._update_target_marker()
 
+    def set_gripper_command(self, command: float) -> None:
+        """Map 0=open and 1=closed to the gripper driver angle."""
+        self.gripper_command = float(np.clip(command, 0.0, 1.0))
+        self.gripper_target = self.gripper_command * SIM_GRIPPER_MAX_ANGLE
+
+    def gripper_position(self) -> float:
+        """Return the simulated driver-joint angle in radians."""
+        return float(self.data.qpos[self.gripper_joint_qpos_adr[0]])
+
     def infer(self) -> None:
         contact_obs = self.contact_observation()
         self.history.append(contact_obs)
@@ -871,6 +1187,7 @@ class Sim2Sim:
 
         self.data.ctrl[:] = 0.0
         self.data.ctrl[self.motor_ids] = torque
+        self.data.ctrl[self.gripper_actuator_id] = self.gripper_target
         self.last_torque = torque
 
     def step(self, physics_step: int) -> None:
@@ -963,7 +1280,7 @@ def run(args: argparse.Namespace) -> None:
         args.arm_max_step,
         args.max_leg_step,
     )
-    keyboard = KeyboardTargetController(args.keyboard_step)
+    keyboard = TerminalKeyboardController(args.keyboard_step)
 
     if args.duration is None:
         if trajectory is None:
@@ -990,7 +1307,14 @@ def run(args: argparse.Namespace) -> None:
         last_log_sim = simulation.data.time
         viewer_sync_count = 0
         while physics_step < max_steps and (viewer_handle is None or viewer_handle.is_running()):
-            target_delta, print_target = keyboard.consume()
+            target_delta, print_target, gripper_command, quit_requested = keyboard.consume()
+            if quit_requested:
+                print("\n[keyboard] 终端请求退出。")
+                break
+            if gripper_command is not None:
+                simulation.set_gripper_command(gripper_command)
+                state = "闭合/夹取" if gripper_command > 0.5 else "张开"
+                print(f"[keyboard] 夹爪{state}")
             if np.any(target_delta):
                 if trajectory is not None:
                     trajectory.translate_offset(target_delta)
@@ -1036,7 +1360,8 @@ def run(args: argparse.Namespace) -> None:
                     f"t={simulation.data.time:7.2f}s  RTF={rtf:5.3f}{viewer_text}  "
                     f"base_z={base_z:6.3f}  "
                     f"EE误差={pos_error:6.3f}m/{rot_error:6.3f}rad  "
-                    f"|action|max={np.max(np.abs(simulation.last_action)):6.3f}"
+                    f"|action|max={np.max(np.abs(simulation.last_action)):6.3f}  "
+                    f"gripper={simulation.gripper_position():5.3f}rad"
                 )
                 if args.leg_debug:
                     joint_position, _ = simulation.joint_state()
@@ -1065,29 +1390,32 @@ def run(args: argparse.Namespace) -> None:
                 last_log_sim = simulation.data.time
                 viewer_sync_count = 0
 
+    print(
+        "[keyboard] 请保持终端窗口焦点：W/S = ±X，A/D = ±Y，R/F = ±Z，"
+        f"O = 张开夹爪，C = 闭合夹取，P = 显示坐标，Q = 退出；"
+        f"步长 {args.keyboard_step:g} m"
+    )
+    keyboard.start()
     try:
-        if args.headless:
-            if run_duration <= 0:
-                raise ValueError("--headless requires --duration greater than zero")
-            loop()
-        else:
-            import mujoco.viewer
+        try:
+            if args.headless:
+                if run_duration <= 0:
+                    raise ValueError("--headless requires --duration greater than zero")
+                loop()
+            else:
+                import mujoco.viewer
 
-            print(
-                "[keyboard] 移动目标点：W/S = ±X，A/D = ±Y，R/F = ±Z，"
-                f"P = 显示坐标；步长 {args.keyboard_step:g} m"
-            )
-            with mujoco.viewer.launch_passive(
-                model, simulation.data, key_callback=keyboard.callback
-            ) as viewer_handle:
-                configure_viewer(
-                    viewer_handle,
-                    simulation.base_body_id,
-                    track_robot=not args.free_camera,
-                )
-                loop(viewer_handle)
-    except KeyboardInterrupt:
-        print("\n[sim2sim] 用户停止。")
+                with mujoco.viewer.launch_passive(model, simulation.data) as viewer_handle:
+                    configure_viewer(
+                        viewer_handle,
+                        simulation.base_body_id,
+                        track_robot=not args.free_camera,
+                    )
+                    loop(viewer_handle)
+        except KeyboardInterrupt:
+            print("\n[sim2sim] 用户停止。")
+    finally:
+        keyboard.close()
 
     pos_error, rot_error = simulation.error()
     ee_position, _ = simulation.ee_pose_base()

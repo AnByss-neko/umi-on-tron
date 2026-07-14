@@ -92,7 +92,7 @@ class CommandsCfg:
     # Training command: random world-frame target pose (point-wise command)
     EE_pose = mdp.UniformWorldPoseCommandCfg(
         asset_name="robot",
-        body_name="link6",
+        body_name="eef_link",
         resampling_time_range=(6.0, 15.0),
         resampling_time_scale=(0.5, 5.0),
         make_quat_unique=True,
@@ -115,14 +115,14 @@ class CommandsCfgPlay:
 
     EE_pose = mdp.PicklePoseSequenceCommandCfg(
         asset_name="robot",
-        body_name="link6",
+        body_name="eef_link",
         # World frame EE pose pkl from umi
         file_path="/home/phi5090ii/NYX/umi-on-tron-lab/IsaacLab_RFM/data/pushing.pkl",
         planar_center=True,
         # add_random_height_range=(-0.05, 0.05),
-        tip_offset_pos=(0.08657, -0.0249, -0.00024366),  # link6 -> tip (joint8 origin)
-        # rotate link6 to UMI tip frame: Rx(-90deg) then Rz(-90deg) (intrinsic XYZ with y=0)
-        tip_offset_rpy=(-math.pi * 0.5, 0.0, -math.pi * 0.5),
+        # eef_link is fixed at the UMI gripper base frame, so no extra link6->tip offset is applied.
+        tip_offset_pos=(0.0, 0.0, 0.0),
+        tip_offset_rpy=(0.0, 0.0, 0.0),
         episode_length_s=10,
         pose_latency=0.1,
         history_buffer_length=100,
@@ -147,7 +147,7 @@ class CommandsCfgCommandPlay:
 
     EE_pose = mdp.UniformWorldPoseCommandCfg(
         asset_name="robot",
-        body_name="link6",
+        body_name="eef_link",
         resampling_time_range=(1.0e9, 1.0e9),
         resampling_time_scale=(1.0, 1.0),
         make_quat_unique=True,
@@ -214,7 +214,7 @@ class ObservationsCfg:
         EE_pose = ObsTerm(
             func=mdp.EE_current_pose_b,
             noise=Unoise(n_min=-0.05, n_max=0.05),
-            params={"asset_cfg": SceneEntityCfg("robot", body_names="link6")},
+            params={"asset_cfg": SceneEntityCfg("robot", body_names="eef_link")},
         )  # 9
         EE_se3_distance_reference = ObsTerm(func=mdp.EE_se3_distance_ref) # 1
 
@@ -238,7 +238,7 @@ class ObservationsCfg:
         EE_pose = ObsTerm(
             func=mdp.EE_current_pose_b,
             noise=Unoise(n_min=-0.05, n_max=0.05),
-            params={"asset_cfg": SceneEntityCfg("robot", body_names="link6")},
+            params={"asset_cfg": SceneEntityCfg("robot", body_names="eef_link")},
         )  # 9
 
         def __post_init__(self):
@@ -260,7 +260,7 @@ class ObservationsCfg:
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)  # 55
         EE_pose = ObsTerm(
             func=mdp.EE_current_pose_b,
-            params={"asset_cfg": SceneEntityCfg("robot", body_names="link6")},
+            params={"asset_cfg": SceneEntityCfg("robot", body_names="eef_link")},
         )  # 86
         foot_position_b = ObsTerm(
             func=mdp.foot_position_b,
@@ -287,11 +287,11 @@ class ObservationsCfg:
         joint_acc = ObsTerm(func=mdp.joint_acc)  # 167
         EE_lin_vel = ObsTerm(
             func=mdp.body_any_vel,
-            params={"asset_cfg": SceneEntityCfg("robot", body_names="link6"), "vel_type": "linear"},
+            params={"asset_cfg": SceneEntityCfg("robot", body_names="eef_link"), "vel_type": "linear"},
         )  
         EE_ang_vel = ObsTerm(
             func=mdp.body_any_vel,
-            params={"asset_cfg": SceneEntityCfg("robot", body_names="link6"), "vel_type": "angular"},
+            params={"asset_cfg": SceneEntityCfg("robot", body_names="eef_link"), "vel_type": "angular"},
         )  
         
         # EE_se3_cb_error = ObsTerm(func=mdp.EE_se3_cb_error, scale=3.0)  # 152
@@ -422,7 +422,7 @@ class RewardsCfg:
 
     # Safety
     safety_exp = RewTerm(
-        func=mdp.safety_reward_exp, weight=1.0, params={"base_height_target": 0.8, "std": math.sqrt(0.5)}
+        func=mdp.safety_reward_exp, weight=2.0, params={"base_height_target": 0.8, "std": math.sqrt(0.5)}
     )
     # pose_product = RewTerm(
     #     func=mdp.pose_product_reward,
@@ -491,7 +491,7 @@ class RewardsCfg:
     # dof_acc_l2 = RewTerm(
     #     func=mdp.joint_acc_l2, weight=-2.0e-6, params={"asset_cfg": SceneEntityCfg("robot", joint_names="J.*")}
     # )
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1.0e-2)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1.5e-2) #1.0
     action_smoothness = RewTerm(func=mdp.action_smoothness_penalty, weight=-5.0e-4)
 
     # -- optional penalties
