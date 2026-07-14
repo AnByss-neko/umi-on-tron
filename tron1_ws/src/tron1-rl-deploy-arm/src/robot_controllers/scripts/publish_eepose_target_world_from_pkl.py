@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Publish EE target poses to /EEPose_target_world from a UMI pkl trajectory,
-replicating PicklePoseSequenceCommand used in LimxEEposeRoughEnvCfg_PLAY.
+replicating PicklePoseSequenceCommand used in LimxEEposeFlatEnvCfg_PLAY.
 
 Key operations (matching IsaacLab play mode exactly):
   1. planar_center: subtract mean of frames [1,2,3] x,y from all frames

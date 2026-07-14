@@ -13,7 +13,7 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": sf_tron1_arm_env_cfg.LimxEEposeRoughEnvCfg,
+        "env_cfg_entry_point": sf_tron1_arm_env_cfg.LimxEEposeFlatEnvCfg,
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.implicit_one_stage_cfg:ImplicitOneStageRunnerCfg",
     },
 )
@@ -23,7 +23,7 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": sf_tron1_arm_env_cfg.LimxEEposeRoughEnvCfg_PLAY,
+        "env_cfg_entry_point": sf_tron1_arm_env_cfg.LimxEEposeFlatEnvCfg_PLAY,
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.implicit_one_stage_cfg:ImplicitOneStageRunnerCfg",
     },
 )
@@ -33,7 +33,7 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": sf_tron1_arm_env_cfg.LimxEEposeCommandEnvCfg_PLAY,
+        "env_cfg_entry_point": sf_tron1_arm_env_cfg.LimxEEposeFlatCommandEnvCfg_PLAY,
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.implicit_one_stage_cfg:ImplicitOneStageRunnerCfg",
     },
 )
@@ -43,7 +43,7 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": sf_tron1_arm_env_cfg.LimxEEposeRoughEnvCfg,
+        "env_cfg_entry_point": sf_tron1_arm_env_cfg.LimxEEposeFlatEnvCfg,
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.fpo_one_stage_cfg:FpoOneStageRunnerCfg",
     },
 )
@@ -53,7 +53,7 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": sf_tron1_arm_env_cfg.LimxEEposeCommandEnvCfg_PLAY,
+        "env_cfg_entry_point": sf_tron1_arm_env_cfg.LimxEEposeFlatCommandEnvCfg_PLAY,
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.fpo_one_stage_cfg:FpoOneStageRunnerCfg",
     },
 )
@@ -62,7 +62,7 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": sf_tron1_arm_env_cfg.LimxEEposeRoughEnvCfg_PLAY,
+        "env_cfg_entry_point": sf_tron1_arm_env_cfg.LimxEEposeFlatEnvCfg_PLAY,
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.fpo_one_stage_cfg:FpoOneStageRunnerCfg",
     },
 )

@@ -34,8 +34,8 @@ from ext_loco.assets.limx import LIMX_SF_TRON1A_ARM
 
 
 @configclass
-class MySceneCfg(InteractiveSceneCfg):
-    """Configuration for the terrain scene with a legged robot."""
+class FlatSceneCfg(InteractiveSceneCfg):
+    """Configuration for a flat-plane scene with a legged robot."""
 
     # ground terrain
     terrain = TerrainImporterCfg(
@@ -630,11 +630,11 @@ class CurriculumCfg:
 
 
 @configclass
-class LimxEEposeRoughEnvCfg(ManagerBasedRLEnvCfg):
-    """Configuration for the locomotion velocity-tracking environment."""
+class LimxEEposeFlatEnvCfg(ManagerBasedRLEnvCfg):
+    """Configuration for the flat-terrain EE pose-tracking environment."""
 
     # Scene settings
-    scene: MySceneCfg = MySceneCfg(num_envs = 4096, env_spacing=2.5)
+    scene: FlatSceneCfg = FlatSceneCfg(num_envs = 4096, env_spacing=2.5)
     # Basic settings
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
@@ -673,7 +673,7 @@ class LimxEEposeRoughEnvCfg(ManagerBasedRLEnvCfg):
                 self.scene.terrain.terrain_generator.curriculum = False
                 
 @configclass
-class LimxEEposeRoughEnvCfg_PLAY(LimxEEposeRoughEnvCfg):
+class LimxEEposeFlatEnvCfg_PLAY(LimxEEposeFlatEnvCfg):
     def __post_init__(self):
         # post init of parent
         super().__post_init__()
@@ -723,7 +723,7 @@ class LimxEEposeRoughEnvCfg_PLAY(LimxEEposeRoughEnvCfg):
 
 
 @configclass
-class LimxEEposeCommandEnvCfg_PLAY(LimxEEposeRoughEnvCfg):
+class LimxEEposeFlatCommandEnvCfg_PLAY(LimxEEposeFlatEnvCfg):
     def __post_init__(self):
         # post init of parent
         super().__post_init__()
