@@ -28,7 +28,11 @@ import onnxruntime as ort
 
 
 SCRIPT_PATH = Path(__file__).resolve()
-ISAACLAB_ROOT = SCRIPT_PATH.parents[2]
+PROJECT_ROOT = SCRIPT_PATH.parent
+if (PROJECT_ROOT / "IsaacLab_RFM").is_dir():
+    ISAACLAB_ROOT = PROJECT_ROOT / "IsaacLab_RFM"
+else:
+    ISAACLAB_ROOT = SCRIPT_PATH.parents[2]
 REPO_ROOT = ISAACLAB_ROOT.parent
 
 DEFAULT_MJCF = (
@@ -41,43 +45,48 @@ DEPLOYED_MODEL_DIR = (
     "pointfoot/SF_TRON1A_ARX5ARM/policy"
 )
 DEFAULT_TRAJECTORY = Path("/home/phi5090ii/UMI-ON-TRON/data/pushing.pkl")
-TIP_OFFSET_POS = np.array([0.08657, -0.0249, -0.00024366], dtype=np.float64)
-TIP_OFFSET_RPY = (-math.pi * 0.5, 0.0, -math.pi * 0.5)
+# Training now tracks the fixed UMI gripper-base frame eef_link directly.
+# Do not apply the old link6->tip transform during sim2sim playback.
+TIP_OFFSET_POS = np.zeros(3, dtype=np.float64)
+TIP_OFFSET_RPY = (0.0, 0.0, 0.0)
+EEF_SITE_NAME = "eef_link"
+EEF_SITE_POS = "0.0999414 0.0000388 0.0767217"
+EEF_SITE_QUAT = "0.99144482142 0 0.130526495702 0"
 
 # This order must match PointfootCfg.init_state.joint_names and the training
 # articulation order. It is intentionally not MuJoCo's internal joint order.
 JOINT_NAMES = (
     "J1",
-    "abad_L_Joint",
-    "abad_R_Joint",
     "J2",
-    "hip_L_Joint",
-    "hip_R_Joint",
     "J3",
-    "knee_L_Joint",
-    "knee_R_Joint",
     "J4",
-    "ankle_L_Joint",
-    "ankle_R_Joint",
     "J5",
     "J6",
+    "abad_L_Joint",
+    "hip_L_Joint",
+    "knee_L_Joint",
+    "ankle_L_Joint",
+    "abad_R_Joint",
+    "hip_R_Joint",
+    "knee_R_Joint",
+    "ankle_R_Joint",
 )
 DEFAULT_JOINT_POS = np.array(
-    [0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     dtype=np.float64,
 )
 
 # IsaacLab actuator gains used by LIMX_SF_TRON1A_ARM.
 KP = np.array(
-    [18.0, 40.0, 40.0, 18.0, 40.0, 40.0, 18.0, 40.0, 40.0, 4.0, 45.0, 45.0, 4.0, 4.0],
+    [18.0, 18.0, 18.0, 4.0, 4.0, 4.0, 40.0, 40.0, 40.0, 45.0, 40.0, 40.0, 40.0, 45.0],
     dtype=np.float64,
 )
 KD = np.array(
-    [1.0, 1.8, 1.8, 1.0, 1.8, 1.8, 1.0, 1.8, 1.8, 0.5, 0.8, 0.8, 0.5, 0.5],
+    [1.0, 1.0, 1.0, 0.5, 0.5, 0.5, 1.8, 1.8, 1.8, 0.8, 1.8, 1.8, 1.8, 0.8],
     dtype=np.float64,
 )
 TORQUE_LIMIT = np.array(
-    [18.0, 80.0, 80.0, 18.0, 80.0, 80.0, 18.0, 80.0, 80.0, 3.0, 40.0, 40.0, 3.0, 3.0],
+    [18.0, 18.0, 18.0, 3.0, 3.0, 3.0, 80.0, 80.0, 80.0, 40.0, 80.0, 80.0, 80.0, 40.0],
     dtype=np.float64,
 )
 
@@ -324,7 +333,7 @@ class PickleTrajectory:
 
         new_cycle = self.command_origin is None or cycle != self.current_cycle
         if new_cycle:
-            self.command_origin = simulation.data.xpos[simulation.ee_body_id].copy()
+            self.command_origin = simulation.data.site_xpos[simulation.ee_site_id].copy()
             self.current_cycle = cycle
             self.finished_message_printed = False
             print(
@@ -385,6 +394,22 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
     worldbody = root.find("worldbody")
     if worldbody is None:
         raise ValueError("MJCF has no worldbody")
+    link6_body = worldbody.find(".//body[@name='link6']")
+    if link6_body is None:
+        raise ValueError("MJCF has no link6 body for eef_link site attachment")
+    if link6_body.find(f"./site[@name='{EEF_SITE_NAME}']") is None:
+        ET.SubElement(
+            link6_body,
+            "site",
+            {
+                "name": EEF_SITE_NAME,
+                "pos": EEF_SITE_POS,
+                "quat": EEF_SITE_QUAT,
+                "size": "0.012",
+                "rgba": "1 0.8 0.05 0.9",
+                "group": "0",
+            },
+        )
     worldbody.insert(
         0,
         ET.Element(
@@ -566,10 +591,10 @@ class Sim2Sim:
             raise ValueError("One or more joint motors are missing from the MJCF")
 
         self.base_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base_Link")
-        self.ee_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "link6")
+        self.ee_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, EEF_SITE_NAME)
         self.target_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "command_target")
         self.imu_sensor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_gyro")
-        if min(self.base_body_id, self.ee_body_id, self.target_site_id, self.imu_sensor_id) < 0:
+        if min(self.base_body_id, self.ee_site_id, self.target_site_id, self.imu_sensor_id) < 0:
             raise ValueError("Required base/EE/IMU/target elements are missing")
 
         mujoco.mj_resetData(model, self.data)
@@ -598,8 +623,8 @@ class Sim2Sim:
 
     def ee_pose_base(self) -> tuple[np.ndarray, np.ndarray]:
         base_position, base_rotation = self.base_pose()
-        ee_position_world = self.data.xpos[self.ee_body_id]
-        ee_rotation_world = self.data.xmat[self.ee_body_id].reshape(3, 3)
+        ee_position_world = self.data.site_xpos[self.ee_site_id]
+        ee_rotation_world = self.data.site_xmat[self.ee_site_id].reshape(3, 3)
         position = base_rotation.T @ (ee_position_world - base_position)
         rotation = base_rotation.T @ ee_rotation_world
         return position, rotation

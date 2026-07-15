@@ -335,8 +335,8 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.8, 0.8),
-            "dynamic_friction_range": (0.6, 0.6),
+            "static_friction_range": (0.6, 1),#0.8
+            "dynamic_friction_range": (0.4, 0.9),#0.6
             "restitution_range": (0.0, 0.0),
             "num_buckets": 64,
         },
@@ -348,7 +348,7 @@ class EventCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="base_Link"),
             # "mass_distribution_params": (-5.0, 5.0),
-            "mass_distribution_params": (-0.5, 2.0),
+            "mass_distribution_params": (-0.5, 3.0),
             "operation": "add",
         },
     )
@@ -407,12 +407,26 @@ class EventCfg:
         },
     )
 
+    # reset_arm_joints = EventTerm(
+    #     func=mdp.reset_selected_joints_by_offset,
+    #     mode="reset",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg(
+    #             "robot",
+    #             joint_names=["J1", "J2", "J3", "J4", "J5", "J6"],
+    #         ),
+    #         # Randomize only the 6 arm joints around their default pose.
+    #         "position_range": (-0.1, 0.1),
+    #         "velocity_range": (-0.2, 0.2),
+    #     },
+    # )
+
     # interval
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
         interval_range_s=(10.0, 15.0),
-        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
+        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (-0.1, 0.1)}}, #add z
     )
 
 
@@ -422,7 +436,7 @@ class RewardsCfg:
 
     # Safety
     safety_exp = RewTerm(
-        func=mdp.safety_reward_exp, weight=2.0, params={"base_height_target": 0.8, "std": math.sqrt(0.5)}
+        func=mdp.safety_reward_exp, weight=2.0, params={"base_height_target": 0.8, "std": math.sqrt(0.5)} #1
     )
     # pose_product = RewTerm(
     #     func=mdp.pose_product_reward,
@@ -491,7 +505,7 @@ class RewardsCfg:
     # dof_acc_l2 = RewTerm(
     #     func=mdp.joint_acc_l2, weight=-2.0e-6, params={"asset_cfg": SceneEntityCfg("robot", joint_names="J.*")}
     # )
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1.5e-2) #1.0
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1.5e-2) #1.0e-2
     action_smoothness = RewTerm(func=mdp.action_smoothness_penalty, weight=-5.0e-4)
 
     # -- optional penalties
@@ -537,7 +551,7 @@ class RewardsCfg:
     )
     foot_slip_l2 = RewTerm(
         func=mdp.foot_slip_l2,
-        weight=-1.0,
+        weight=-2.0,#1
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="ankle_.*"),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names="ankle_.*"),
@@ -612,7 +626,7 @@ class CurriculumCfg:
     pos_commands_ranges_level = CurrTerm(
         func=mdp.pos_commands_ranges_level,  # type: ignore
         params={
-            "max_range": {"pos_x": (-3.5, 3.5), "pos_y": (-3.5, 3.5), "pos_z": (0.1, 2.0)},
+            "max_range": {"pos_x": (-3.5, 3.5), "pos_y": (-3.5, 3.5), "pos_z": (0.1, 2.0)},#z(0.1,2)
             "update_interval": 80 * 24,  # 80 iterations * 24 steps per iteration
             "command_name": "EE_pose",
         },
@@ -710,6 +724,8 @@ class LimxEEposeRoughEnvCfg_PLAY(LimxEEposeRoughEnvCfg):
         }
         self.events.reset_tron_joints.params["position_range"] = (0.0, 0.0)
         self.events.reset_tron_joints.params["velocity_range"] = (0.0, 0.0)
+        self.events.reset_arm_joints.params["position_range"] = (0.0, 0.0)
+        self.events.reset_arm_joints.params["velocity_range"] = (0.0, 0.0)
 
         # only end episodes on time_out (= trajectory complete); disable all other
         # terminations that would interrupt trajectory playback mid-way
@@ -757,6 +773,8 @@ class LimxEEposeCommandEnvCfg_PLAY(LimxEEposeRoughEnvCfg):
         }
         self.events.reset_tron_joints.params["position_range"] = (0.0, 0.0)
         self.events.reset_tron_joints.params["velocity_range"] = (0.0, 0.0)
+        self.events.reset_arm_joints.params["position_range"] = (0.0, 0.0)
+        self.events.reset_arm_joints.params["velocity_range"] = (0.0, 0.0)
 
         # keep the fixed-command play running until the user closes the app.
         del self.terminations.base_contact
