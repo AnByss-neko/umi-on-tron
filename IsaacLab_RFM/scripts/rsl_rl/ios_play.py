@@ -26,6 +26,8 @@ parser.add_argument(
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
+parser.add_argument("--debug_arm", action="store_true", help="Print J1-J6 action, position, velocity and torque.")
+parser.add_argument("--debug_arm_interval", type=int, default=25, help="Steps between arm debug prints.")
 # parser.add_argument("--use_teleop", type=str, default=False, help="Use Device for interacting with environment")
 
 # append RSL-RL cli arguments
@@ -107,6 +109,23 @@ def main():
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env)
+
+    arm_action_ids = []
+    arm_joint_ids = []
+    if args_cli.debug_arm:
+        arm_names = [f"J{i}" for i in range(1, 7)]
+        action_offset = 0
+        for term_name in env.unwrapped.action_manager.active_terms:
+            term = env.unwrapped.action_manager.get_term(term_name)
+            joint_names = list(getattr(term, "_joint_names", []))
+            for local_id, joint_name in enumerate(joint_names):
+                if joint_name in arm_names:
+                    arm_action_ids.append(action_offset + local_id)
+            action_offset += term.action_dim
+        robot = env.unwrapped.scene["robot"]
+        arm_joint_ids, arm_joint_names = robot.find_joints(arm_names, preserve_order=True)
+        print(f"[debug_arm] action ids: {arm_action_ids}")
+        print(f"[debug_arm] joint ids: {list(zip(arm_joint_names, arm_joint_ids))}")
 
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     # load previously trained model
@@ -206,6 +225,19 @@ def main():
         with torch.inference_mode():
             # agent stepping
             action = policy(obs, cn_obs_history)
+            if args_cli.debug_arm and i % max(args_cli.debug_arm_interval, 1) == 0:
+                robot = env.unwrapped.scene["robot"]
+                arm_action = action[0, arm_action_ids].detach().cpu().numpy()
+                arm_pos = robot.data.joint_pos[0, arm_joint_ids].detach().cpu().numpy()
+                arm_vel = robot.data.joint_vel[0, arm_joint_ids].detach().cpu().numpy()
+                arm_torque = robot.data.applied_torque[0, arm_joint_ids].detach().cpu().numpy()
+                print(
+                    f"[debug_arm step={i}] "
+                    f"action={arm_action.round(3).tolist()} "
+                    f"pos={arm_pos.round(3).tolist()} "
+                    f"vel={arm_vel.round(3).tolist()} "
+                    f"torque={arm_torque.round(3).tolist()}"
+                )
             
             # for onnx policy testing
             # action_1_onnx = test_onnx_policy(obs[0, :], cn_obs_history[0, :])
@@ -214,6 +246,7 @@ def main():
             obs, _, dones, infos = env.step(action)
             cn_obs_history = infos["observations"]["contactNet"]
             runner.ppo_alg.gru.reset_hidden_states(dones)
+            i += 1
         # 按真实时间节流到物理步长
         elapsed = time.time() - loop_start
         sleep_time = step_dt - elapsed

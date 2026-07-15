@@ -436,7 +436,7 @@ class RewardsCfg:
 
     # Safety
     safety_exp = RewTerm(
-        func=mdp.safety_reward_exp, weight=2.0, params={"base_height_target": 0.8, "std": math.sqrt(0.5)} #1
+        func=mdp.safety_reward_exp, weight=1.0, params={"base_height_target": 0.8, "std": math.sqrt(0.5)} #1
     )
     # pose_product = RewTerm(
     #     func=mdp.pose_product_reward,
@@ -446,8 +446,8 @@ class RewardsCfg:
     # EE Tracking
     track_EE_position_exp = RewTerm(func=mdp.track_EE_position_exp, weight=2.0, params={"command_name": "EE_pose", "std": math.sqrt(0.5)}) #2
     track_EE_orientation_exp = RewTerm(func=mdp.track_EE_orientation_exp, weight=3.0, params={"command_name": "EE_pose", "std": math.sqrt(0.5)})
-    track_EE_pb = RewTerm(func=mdp.track_EE_pb, weight=20.0)
-    track_EE_reference_exp = RewTerm(func=mdp.track_EE_reference_exp, weight=5.0, params={"std": math.sqrt(0.5), "init_value": 0.98})
+    track_EE_pb = RewTerm(func=mdp.track_EE_pb, weight=15.0)
+    track_EE_reference_exp = RewTerm(func=mdp.track_EE_reference_exp, weight=1.5, params={"std": math.sqrt(0.5), "init_value": 0.98})
 
     # Penalties
     # lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
