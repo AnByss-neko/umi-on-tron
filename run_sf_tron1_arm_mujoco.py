@@ -53,40 +53,40 @@ EEF_SITE_NAME = "eef_link"
 EEF_SITE_POS = "0.0999414 0.0000388 0.0767217"
 EEF_SITE_QUAT = "0.99144482142 0 0.130526495702 0"
 
-# This order must match PointfootCfg.init_state.joint_names and the training
-# articulation order. It is intentionally not MuJoCo's internal joint order.
+# This order must match IsaacLab's articulation/action order. It is intentionally
+# not MuJoCo's internal joint order.
 JOINT_NAMES = (
+    "abad_L_Joint",
+    "abad_R_Joint",
+    "hip_L_Joint",
+    "hip_R_Joint",
+    "knee_L_Joint",
+    "knee_R_Joint",
     "J1",
+    "ankle_L_Joint",
+    "ankle_R_Joint",
     "J2",
     "J3",
     "J4",
     "J5",
     "J6",
-    "abad_L_Joint",
-    "hip_L_Joint",
-    "knee_L_Joint",
-    "ankle_L_Joint",
-    "abad_R_Joint",
-    "hip_R_Joint",
-    "knee_R_Joint",
-    "ankle_R_Joint",
 )
 DEFAULT_JOINT_POS = np.array(
-    [0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0],
     dtype=np.float64,
 )
 
 # IsaacLab actuator gains used by LIMX_SF_TRON1A_ARM.
 KP = np.array(
-    [18.0, 18.0, 18.0, 4.0, 4.0, 4.0, 40.0, 40.0, 40.0, 45.0, 40.0, 40.0, 40.0, 45.0],
+    [40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 18.0, 45.0, 45.0, 18.0, 18.0, 4.0, 4.0, 4.0],
     dtype=np.float64,
 )
 KD = np.array(
-    [1.0, 1.0, 1.0, 0.5, 0.5, 0.5, 1.8, 1.8, 1.8, 0.8, 1.8, 1.8, 1.8, 0.8],
+    [1.8, 1.8, 1.8, 1.8, 1.8, 1.8, 1.0, 0.8, 0.8, 1.0, 1.0, 0.5, 0.5, 0.5],
     dtype=np.float64,
 )
 TORQUE_LIMIT = np.array(
-    [18.0, 18.0, 18.0, 3.0, 3.0, 3.0, 80.0, 80.0, 80.0, 40.0, 80.0, 80.0, 80.0, 40.0],
+    [80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 18.0, 40.0, 40.0, 18.0, 18.0, 3.0, 3.0, 3.0],
     dtype=np.float64,
 )
 
