@@ -12,6 +12,6 @@ scripts/rsl_rl/ios_train.py \
   --headless \
   --logger wandb \
   --resume True \
-  --load_run 2026-07-14_20-40-56 \
-  --checkpoint model_12800.pt \
-  --max_iterations 7200
+  --load_run 2026-07-15_21-17-07 \
+  --checkpoint model_15400.pt \
+  --max_iterations 20000
