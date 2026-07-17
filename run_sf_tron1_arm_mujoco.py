@@ -100,6 +100,14 @@ HISTORY_LENGTH = 10
 OBS_DIM = 65
 CONTACT_OBS_DIM = 55
 ACTION_DIM = 14
+AXIS_MARKER_LENGTH = 0.16
+AXIS_MARKER_RADIUS = 0.006
+AXIS_MARKER_TIP_RADIUS = 0.015
+AXIS_MARKERS = (
+    ("x", np.array([1.0, 0.0, 0.0]), "1 0 0"),
+    ("y", np.array([0.0, 1.0, 0.0]), "0 1 0"),
+    ("z", np.array([0.0, 0.0, 1.0]), "0 0.25 1"),
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -237,6 +245,113 @@ def rotation_from_rpy(roll: float, pitch: float, yaw: float) -> np.ndarray:
 def rotation_angle(rotation: np.ndarray) -> float:
     cosine = np.clip((np.trace(rotation) - 1.0) * 0.5, -1.0, 1.0)
     return float(math.acos(float(cosine)))
+
+
+def quat_from_rotation(rotation: np.ndarray) -> np.ndarray:
+    """Convert a 3x3 rotation matrix to a MuJoCo wxyz quaternion."""
+    rotation = np.asarray(rotation, dtype=np.float64)
+    trace = float(np.trace(rotation))
+    if trace > 0.0:
+        scale = math.sqrt(trace + 1.0) * 2.0
+        return np.array(
+            [
+                0.25 * scale,
+                (rotation[2, 1] - rotation[1, 2]) / scale,
+                (rotation[0, 2] - rotation[2, 0]) / scale,
+                (rotation[1, 0] - rotation[0, 1]) / scale,
+            ],
+            dtype=np.float64,
+        )
+    if rotation[0, 0] > rotation[1, 1] and rotation[0, 0] > rotation[2, 2]:
+        scale = math.sqrt(1.0 + rotation[0, 0] - rotation[1, 1] - rotation[2, 2]) * 2.0
+        return np.array(
+            [
+                (rotation[2, 1] - rotation[1, 2]) / scale,
+                0.25 * scale,
+                (rotation[0, 1] + rotation[1, 0]) / scale,
+                (rotation[0, 2] + rotation[2, 0]) / scale,
+            ],
+            dtype=np.float64,
+        )
+    if rotation[1, 1] > rotation[2, 2]:
+        scale = math.sqrt(1.0 + rotation[1, 1] - rotation[0, 0] - rotation[2, 2]) * 2.0
+        return np.array(
+            [
+                (rotation[0, 2] - rotation[2, 0]) / scale,
+                (rotation[0, 1] + rotation[1, 0]) / scale,
+                0.25 * scale,
+                (rotation[1, 2] + rotation[2, 1]) / scale,
+            ],
+            dtype=np.float64,
+        )
+    scale = math.sqrt(1.0 + rotation[2, 2] - rotation[0, 0] - rotation[1, 1]) * 2.0
+    return np.array(
+        [
+            (rotation[1, 0] - rotation[0, 1]) / scale,
+            (rotation[0, 2] + rotation[2, 0]) / scale,
+            (rotation[1, 2] + rotation[2, 1]) / scale,
+            0.25 * scale,
+        ],
+        dtype=np.float64,
+    )
+
+
+def quat_with_local_x(direction: np.ndarray) -> np.ndarray:
+    """Quaternion for a marker whose local +X axis points along direction."""
+    x_axis = np.asarray(direction, dtype=np.float64)
+    x_axis /= np.linalg.norm(x_axis)
+    reference = np.array([0.0, 0.0, 1.0])
+    if abs(float(np.dot(x_axis, reference))) > 0.95:
+        reference = np.array([0.0, 1.0, 0.0])
+    y_axis = np.cross(reference, x_axis)
+    y_axis /= np.linalg.norm(y_axis)
+    z_axis = np.cross(x_axis, y_axis)
+    rotation = np.column_stack((x_axis, y_axis, z_axis))
+    return quat_from_rotation(rotation)
+
+
+def add_axis_sites(parent: ET.Element, prefix: str, alpha: str) -> None:
+    axis_quats = {
+        "x": "1 0 0 0",
+        "y": "0.70710678 0 0 0.70710678",
+        "z": "0.70710678 0 -0.70710678 0",
+    }
+    axis_positions = {
+        "x": f"{AXIS_MARKER_LENGTH * 0.5:g} 0 0",
+        "y": f"0 {AXIS_MARKER_LENGTH * 0.5:g} 0",
+        "z": f"0 0 {AXIS_MARKER_LENGTH * 0.5:g}",
+    }
+    tip_positions = {
+        "x": f"{AXIS_MARKER_LENGTH:g} 0 0",
+        "y": f"0 {AXIS_MARKER_LENGTH:g} 0",
+        "z": f"0 0 {AXIS_MARKER_LENGTH:g}",
+    }
+    for axis_name, _, color in AXIS_MARKERS:
+        ET.SubElement(
+            parent,
+            "site",
+            {
+                "name": f"{prefix}_{axis_name}_line",
+                "type": "box",
+                "pos": axis_positions[axis_name],
+                "quat": axis_quats[axis_name],
+                "size": f"{AXIS_MARKER_LENGTH * 0.5:g} {AXIS_MARKER_RADIUS:g} {AXIS_MARKER_RADIUS:g}",
+                "rgba": f"{color} {alpha}",
+                "group": "0",
+            },
+        )
+        ET.SubElement(
+            parent,
+            "site",
+            {
+                "name": f"{prefix}_{axis_name}_tip",
+                "type": "sphere",
+                "pos": tip_positions[axis_name],
+                "size": f"{AXIS_MARKER_TIP_RADIUS:g}",
+                "rgba": f"{color} {alpha}",
+                "group": "0",
+            },
+        )
 
 
 def rotation_from_axis_angle(axis_angle: np.ndarray) -> np.ndarray:
@@ -410,6 +525,17 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
                 "group": "0",
             },
         )
+    if link6_body.find("./body[@name='eef_axis_frame']") is None:
+        eef_axis_frame = ET.SubElement(
+            link6_body,
+            "body",
+            {
+                "name": "eef_axis_frame",
+                "pos": EEF_SITE_POS,
+                "quat": EEF_SITE_QUAT,
+            },
+        )
+        add_axis_sites(eef_axis_frame, "ee_axis", "1.0")
     worldbody.insert(
         0,
         ET.Element(
@@ -433,20 +559,29 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
             {"name": "sim2sim_light", "pos": "0 -1 3", "dir": "0 0 -1", "directional": "true"},
         ),
     )
-    worldbody.insert(
-        2,
-        ET.Element(
-            "site",
-            {
-                "name": "command_target",
-                "type": "sphere",
-                "pos": "0.15 0 1",
-                "size": "0.035",
-                "rgba": "1 0.1 0.1 0.8",
-                "group": "0",
-            },
-        ),
+    target_axis_frame = ET.Element(
+        "body",
+        {
+            "name": "target_axis_frame",
+            "mocap": "true",
+            "pos": "0.15 0 1",
+            "quat": "1 0 0 0",
+        },
     )
+    ET.SubElement(
+        target_axis_frame,
+        "site",
+        {
+            "name": "command_target",
+            "type": "sphere",
+            "pos": "0 0 0",
+            "size": "0.05",
+            "rgba": "1 0.1 0.1 1",
+            "group": "0",
+        },
+    )
+    add_axis_sites(target_axis_frame, "target_axis", "0.85")
+    worldbody.insert(2, target_axis_frame)
     xml = ET.tostring(root, encoding="unicode")
     return mujoco.MjModel.from_xml_string(xml)
 
@@ -593,8 +728,17 @@ class Sim2Sim:
         self.base_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base_Link")
         self.ee_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, EEF_SITE_NAME)
         self.target_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "command_target")
+        self.target_axis_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "target_axis_frame")
+        self.target_mocap_id = int(model.body_mocapid[self.target_axis_body_id])
         self.imu_sensor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_gyro")
-        if min(self.base_body_id, self.ee_site_id, self.target_site_id, self.imu_sensor_id) < 0:
+        if min(
+            self.base_body_id,
+            self.ee_site_id,
+            self.target_site_id,
+            self.target_axis_body_id,
+            self.target_mocap_id,
+            self.imu_sensor_id,
+        ) < 0:
             raise ValueError("Required base/EE/IMU/target elements are missing")
 
         mujoco.mj_resetData(model, self.data)
@@ -713,8 +857,10 @@ class Sim2Sim:
         )
 
     def _update_target_marker(self) -> None:
-        target_position, _ = self.target_pose_world()
-        self.model.site_pos[self.target_site_id] = target_position
+        target_position, target_rotation = self.target_pose_world()
+        self.data.mocap_pos[self.target_mocap_id] = target_position
+        self.data.mocap_quat[self.target_mocap_id] = quat_from_rotation(target_rotation)
+        mujoco.mj_forward(self.model, self.data)
 
     def translate_target(self, delta: np.ndarray) -> None:
         """Translate the target in the selected command frame."""
@@ -789,6 +935,28 @@ def configure_viewer(viewer_handle, base_body_id: int, track_robot: bool) -> Non
     viewer_handle.cam.elevation = -18.0
     viewer_handle.opt.geomgroup[2] = 1
     viewer_handle.opt.geomgroup[3] = 0
+    viewer_handle.opt.sitegroup[0] = 1
+
+
+def format_vector(vector: np.ndarray) -> str:
+    return "[" + ", ".join(f"{value: .3f}" for value in np.asarray(vector)) + "]"
+
+
+def format_pose_axes(label: str, position: np.ndarray, rotation: np.ndarray) -> str:
+    return (
+        f"{label}: xyz={format_vector(position)}  "
+        f"x_axis={format_vector(rotation[:, 0])}  "
+        f"y_axis={format_vector(rotation[:, 1])}  "
+        f"z_axis={format_vector(rotation[:, 2])}"
+    )
+
+
+def print_base_pose_summary(simulation: Sim2Sim, prefix: str = "[pose]") -> None:
+    ee_position, ee_rotation = simulation.ee_pose_base()
+    target_position, target_rotation = simulation.target_pose_base()
+    print(f"{prefix} base frame, same axes convention as training obs")
+    print("  " + format_pose_axes("EE    ", ee_position, ee_rotation))
+    print("  " + format_pose_axes("target", target_position, target_rotation))
 
 
 def run(args: argparse.Namespace) -> None:
@@ -832,6 +1000,7 @@ def run(args: argparse.Namespace) -> None:
     policy = ThreeOnnxPolicy(model_dir, args.sample_latent, rng)
     simulation = Sim2Sim(model, policy, command, command_frame, args.base_height)
     keyboard = KeyboardTargetController(args.keyboard_step)
+    print_base_pose_summary(simulation, prefix="[sim2sim] 初始位姿")
 
     if args.duration is None:
         if trajectory is None:
@@ -866,11 +1035,13 @@ def run(args: argparse.Namespace) -> None:
                         f"[keyboard] target({command_frame})="
                         f"{simulation.target_position.round(4).tolist()}"
                     )
+                    print_base_pose_summary(simulation, prefix="[keyboard]")
             elif print_target:
                 print(
                     f"[keyboard] target({command_frame})="
                     f"{simulation.target_position.round(4).tolist()}"
                 )
+                print_base_pose_summary(simulation, prefix="[keyboard]")
             if trajectory is not None and physics_step % POLICY_DECIMATION == 0:
                 trajectory.update(simulation)
             simulation.step(physics_step)
@@ -887,6 +1058,7 @@ def run(args: argparse.Namespace) -> None:
                     f"EE误差={pos_error:6.3f}m/{rot_error:6.3f}rad  "
                     f"|action|max={np.max(np.abs(simulation.last_action)):6.3f}"
                 )
+                print_base_pose_summary(simulation, prefix="[pose]")
             if not args.no_realtime:
                 deadline = wall_start + simulation.data.time
                 remaining = deadline - time.perf_counter()
@@ -918,10 +1090,9 @@ def run(args: argparse.Namespace) -> None:
         print("\n[sim2sim] 用户停止。")
 
     pos_error, rot_error = simulation.error()
-    ee_position, _ = simulation.ee_pose_base()
+    print_base_pose_summary(simulation, prefix="[sim2sim] 结束位姿")
     print(
-        f"[sim2sim] 结束：EE(base)={ee_position.tolist()}, "
-        f"最终误差={pos_error:.4f} m / {rot_error:.4f} rad"
+        f"[sim2sim] 结束：最终误差={pos_error:.4f} m / {rot_error:.4f} rad"
     )
 
 
