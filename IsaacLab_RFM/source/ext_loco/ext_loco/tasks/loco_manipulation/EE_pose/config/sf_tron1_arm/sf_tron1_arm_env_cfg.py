@@ -436,7 +436,7 @@ class RewardsCfg:
 
     # Safety
     safety_exp = RewTerm(
-        func=mdp.safety_reward_exp, weight=1.5, params={"base_height_target": 0.8, "std": math.sqrt(0.5)} #1
+        func=mdp.safety_reward_exp, weight=2, params={"base_height_target": 0.8, "std": math.sqrt(0.5)} #1
     )
     # pose_product = RewTerm(
     #     func=mdp.pose_product_reward,
@@ -444,10 +444,10 @@ class RewardsCfg:
     #     params={"pos_sigma": 0.6, "orn_sigma": 2.0, "command_name": "EE_pose"},
     # )
     # EE Tracking
-    track_EE_position_exp = RewTerm(func=mdp.track_EE_position_exp, weight=4.0, params={"command_name": "EE_pose", "std": math.sqrt(0.5)}) #2 #mani
-    track_EE_orientation_exp = RewTerm(func=mdp.track_EE_orientation_exp, weight=6.0, params={"command_name": "EE_pose", "std": math.sqrt(0.5)}) #3mani
-    track_EE_pb = RewTerm(func=mdp.track_EE_pb, weight=20.0)#15 #locomani
-    track_EE_reference_exp = RewTerm(func=mdp.track_EE_reference_exp, weight=5, params={"std": math.sqrt(0.5), "init_value": 0.98})#1.5 #loco
+    track_EE_position_exp = RewTerm(func=mdp.track_EE_position_exp, weight=5, params={"command_name": "EE_pose", "std": math.sqrt(0.5)}) #2 #mani
+    track_EE_orientation_exp = RewTerm(func=mdp.track_EE_orientation_exp, weight=5.0, params={"command_name": "EE_pose", "std": math.sqrt(0.5)}) #3mani
+    track_EE_pb = RewTerm(func=mdp.track_EE_pb, weight=10.0)#15 #locomani
+    track_EE_reference_exp = RewTerm(func=mdp.track_EE_reference_exp, weight=3, params={"std": math.sqrt(0.5), "init_value": 0.98})#1.5 #loco
 
     # Penalties
     # lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
@@ -502,23 +502,23 @@ class RewardsCfg:
         },
     )
 
-    # dof_acc_l2 = RewTerm(
-    #     func=mdp.joint_acc_l2, weight=-2.0e-6, params={"asset_cfg": SceneEntityCfg("robot", joint_names="J.*")}
-    # )
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-10e-2) #1.0e-2
-    action_smoothness = RewTerm(func=mdp.action_smoothness_penalty, weight=-5.0e-4)
+    dof_acc_l2 = RewTerm(
+        func=mdp.joint_acc_l2, weight=-2.0e-5, params={"asset_cfg": SceneEntityCfg("robot", joint_names="J.*")}#-2.0e-6
+    )
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1) #1.0e-2
+    action_smoothness = RewTerm(func=mdp.action_smoothness_penalty, weight=-5.0e-2)#-5e-4
 
     # -- optional penalties
     dof_vel_ankle_l2 = RewTerm(
-        func=mdp.joint_vel_l2, weight=-5.0e-4, params={"asset_cfg": SceneEntityCfg("robot", joint_names="ankle_.+")}
+        func=mdp.joint_vel_l2, weight=-5.0e-4, params={"asset_cfg": SceneEntityCfg("robot", joint_names="ankle_.+")}#-5.0e-4
     )
     dof_vel_non_ankle_l2 = RewTerm(
         func=mdp.joint_vel_l2,
         weight=-5.0e-4,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names="(?!ankle_).*")},
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names="(?!ankle_).*")},#-5.0e-4
     )
     dof_vel_arm_l2 = RewTerm(
-        func=mdp.joint_vel_l2, weight=-5.0e-4, params={"asset_cfg": SceneEntityCfg("robot", joint_names="J.*")}
+        func=mdp.joint_vel_l2, weight=-5.0e-4, params={"asset_cfg": SceneEntityCfg("robot", joint_names="J.*")}#-5.0e-4
     )
     # dof_power_l1 = RewTerm(func=mdp.dof_power_l1, weight=0.0)
     dof_non_ankle_pos_limits = RewTerm(
@@ -546,12 +546,12 @@ class RewardsCfg:
     )
     foot_flat_l2 = RewTerm(
         func=mdp.foot_flat_l2,
-        weight=-2.0,
+        weight=-3.0,#-2
         params={"asset_cfg": SceneEntityCfg("robot", body_names="ankle_.*")},
     )
     foot_slip_l2 = RewTerm(
         func=mdp.foot_slip_l2,
-        weight=-1.0,#1
+        weight=-10.0,#-1
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="ankle_.*"),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names="ankle_.*"),
@@ -627,14 +627,14 @@ class CurriculumCfg:
         func=mdp.pos_commands_ranges_level,  # type: ignore
         params={
             "max_range": {"pos_x": (-3.5, 3.5), "pos_y": (-3.5, 3.5), "pos_z": (0.1, 2.0)},#z(0.1,2)
-            "update_interval": 80 * 12,  # 80 iterations * 24 steps per iteration
+            "update_interval": 80 * 1,  # 80 iterations * 24 steps per iteration
             "command_name": "EE_pose",
         },
     )
     orient_commands_ranges_level = CurrTerm(
         func=mdp.orient_commands_ranges_level, # type: ignore
         params={
-            "update_interval": 80 * 12,  # 80 iterations * 24 steps per iteration
+            "update_interval": 80 * 1,  # 80 iterations * 24 steps per iteration
             "command_name": "EE_pose",
         },
     )
@@ -747,6 +747,12 @@ class LimxEEposeCommandEnvCfg_PLAY(LimxEEposeRoughEnvCfg):
 
         # Use a fixed EE command for play/eval instead of a pickle trajectory.
         self.commands = CommandsCfgCommandPlay()
+
+        # Fixed-command evaluation must not run the training curricula.  In
+        # particular, pos_x=(-0.5, -0.5) would otherwise be expanded into the
+        # invalid interval (0.46, -0.46) on the first reset.
+        del self.curriculum.pos_commands_ranges_level
+        del self.curriculum.orient_commands_ranges_level
 
         # make a smaller scene for play
         self.scene.num_envs = 50

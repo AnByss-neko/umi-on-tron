@@ -45,13 +45,13 @@ DEPLOYED_MODEL_DIR = (
     "pointfoot/SF_TRON1A_ARX5ARM/policy"
 )
 DEFAULT_TRAJECTORY = Path("/home/phi5090ii/UMI-ON-TRON/data/pushing.pkl")
-# Training now tracks the fixed UMI gripper-base frame eef_link directly.
-# Do not apply the old link6->tip transform during sim2sim playback.
+# Training tracks eef_link 0.15 m forward along the link6 X axis.
+# Keep trajectory conversion free of an additional offset to avoid applying it twice.
 TIP_OFFSET_POS = np.zeros(3, dtype=np.float64)
 TIP_OFFSET_RPY = (0.0, 0.0, 0.0)
 EEF_SITE_NAME = "eef_link"
-EEF_SITE_POS = "0.0999414 0.0000388 0.0767217"
-EEF_SITE_QUAT = "0.99144482142 0 0.130526495702 0"
+EEF_SITE_POS = "0.15 0 0"
+EEF_SITE_QUAT = "1 0 0 0"
 
 # This order must match IsaacLab's articulation/action order. It is intentionally
 # not MuJoCo's internal joint order.
@@ -71,6 +71,8 @@ JOINT_NAMES = (
     "J5",
     "J6",
 )
+ARM_NAMES = ("J1", "J2", "J3", "J4", "J5", "J6")
+ARM_IDS = np.array([JOINT_NAMES.index(name) for name in ARM_NAMES], dtype=int)
 DEFAULT_JOINT_POS = np.array(
     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0],
     dtype=np.float64,
@@ -100,9 +102,11 @@ HISTORY_LENGTH = 10
 OBS_DIM = 65
 CONTACT_OBS_DIM = 55
 ACTION_DIM = 14
-AXIS_MARKER_LENGTH = 0.16
-AXIS_MARKER_RADIUS = 0.006
-AXIS_MARKER_TIP_RADIUS = 0.015
+# Compact coordinate-frame markers: thin shafts and small endpoint dots keep
+# both EE and target frames readable without covering the gripper.
+AXIS_MARKER_LENGTH = 0.11
+AXIS_MARKER_RADIUS = 0.003
+AXIS_MARKER_TIP_RADIUS = 0.006
 AXIS_MARKERS = (
     ("x", np.array([1.0, 0.0, 0.0]), "1 0 0"),
     ("y", np.array([0.0, 1.0, 0.0]), "0 1 0"),
@@ -512,19 +516,20 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
     link6_body = worldbody.find(".//body[@name='link6']")
     if link6_body is None:
         raise ValueError("MJCF has no link6 body for eef_link site attachment")
-    if link6_body.find(f"./site[@name='{EEF_SITE_NAME}']") is None:
-        ET.SubElement(
+    eef_site = link6_body.find(f"./site[@name='{EEF_SITE_NAME}']")
+    if eef_site is None:
+        eef_site = ET.SubElement(
             link6_body,
             "site",
-            {
-                "name": EEF_SITE_NAME,
-                "pos": EEF_SITE_POS,
-                "quat": EEF_SITE_QUAT,
-                "size": "0.012",
-                "rgba": "1 0.8 0.05 0.9",
-                "group": "0",
-            },
+            {"name": EEF_SITE_NAME},
         )
+    # Override a pre-existing site as well: older MJCF files contain the old
+    # gripper-base offset and a visible yellow marker at this name.
+    eef_site.set("pos", EEF_SITE_POS)
+    eef_site.set("quat", EEF_SITE_QUAT)
+    eef_site.set("size", "0.001")
+    eef_site.set("rgba", "0 0 0 0")
+    eef_site.set("group", "0")
     if link6_body.find("./body[@name='eef_axis_frame']") is None:
         eef_axis_frame = ET.SubElement(
             link6_body,
@@ -575,12 +580,12 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
             "name": "command_target",
             "type": "sphere",
             "pos": "0 0 0",
-            "size": "0.05",
-            "rgba": "1 0.1 0.1 1",
+            "size": "0.012",
+            "rgba": "1 0.1 0.1 0.9",
             "group": "0",
         },
     )
-    add_axis_sites(target_axis_frame, "target_axis", "0.85")
+    add_axis_sites(target_axis_frame, "target_axis", "0.8")
     worldbody.insert(2, target_axis_frame)
     xml = ET.tostring(root, encoding="unicode")
     return mujoco.MjModel.from_xml_string(xml)
@@ -708,6 +713,7 @@ class Sim2Sim:
         command: np.ndarray,
         command_frame: str,
         base_height: float,
+        se3_decrease_velocity: float,
     ):
         self.model = model
         self.data = mujoco.MjData(model)
@@ -715,6 +721,7 @@ class Sim2Sim:
         self.command_frame = command_frame
         self.target_position = command[:3].copy()
         self.target_rotation = rotation_from_rpy(*command[3:])
+        self.se3_decrease_velocity = float(se3_decrease_velocity)
 
         self.joint_qpos_adr = np.array([model.joint(name).qposadr[0] for name in JOINT_NAMES], dtype=int)
         self.joint_dof_adr = np.array([model.joint(name).dofadr[0] for name in JOINT_NAMES], dtype=int)
@@ -752,6 +759,8 @@ class Sim2Sim:
         self.raw_action = np.zeros(ACTION_DIM, dtype=np.float64)
         self.last_action = np.zeros(ACTION_DIM, dtype=np.float64)
         self.last_torque = np.zeros(ACTION_DIM, dtype=np.float64)
+        self.torque_saturation_counts = np.zeros(ACTION_DIM, dtype=np.int64)
+        self.torque_samples = 0
         self.history: deque[np.ndarray] = deque(maxlen=HISTORY_LENGTH)
         self.se3_distance_reference = self._initial_se3_distance()
         first_contact_obs = self.contact_observation()
@@ -886,21 +895,25 @@ class Sim2Sim:
         self.history.append(contact_obs)
         history = np.stack(self.history, axis=0)
         self.raw_action = self.policy(self.policy_observation(), history)
-        self.se3_distance_reference = max(0.0, self.se3_distance_reference - POLICY_DT)
+        self.se3_distance_reference = max(
+            0.0,
+            self.se3_distance_reference - self.se3_decrease_velocity * POLICY_DT,
+        )
 
     def apply_pd(self) -> None:
         position, velocity = self.joint_state()
-        # Same torque-aware action clamp used by SolefootController.cpp.
-        action_min = position - DEFAULT_JOINT_POS + (KD * velocity - TORQUE_LIMIT) / KP
-        action_max = position - DEFAULT_JOINT_POS + (KD * velocity + TORQUE_LIMIT) / KP
-        effective_action = np.clip(self.raw_action, action_min, action_max)
-        desired_position = DEFAULT_JOINT_POS + effective_action
-        torque = KP * (desired_position - position) - KD * velocity
-        torque = np.clip(torque, -TORQUE_LIMIT, TORQUE_LIMIT)
+        # Match Isaac Lab JointPositionActionCfg. The raw action is the joint
+        # position-target offset; only the resulting PD effort is clipped.
+        desired_position = DEFAULT_JOINT_POS + self.raw_action
+        unclipped_torque = KP * (desired_position - position) - KD * velocity
+        self.torque_saturation_counts += np.abs(unclipped_torque) >= TORQUE_LIMIT
+        self.torque_samples += 1
+        torque = np.clip(unclipped_torque, -TORQUE_LIMIT, TORQUE_LIMIT)
 
         self.data.ctrl[:] = 0.0
         self.data.ctrl[self.motor_ids] = torque
-        self.last_action = effective_action
+        # IsaacLab mdp.last_action is the previous raw policy action.
+        self.last_action = self.raw_action.copy()
         self.last_torque = torque
 
     def step(self, physics_step: int) -> None:
@@ -998,7 +1011,14 @@ def run(args: argparse.Namespace) -> None:
 
     model = load_sim_model(args.mjcf)
     policy = ThreeOnnxPolicy(model_dir, args.sample_latent, rng)
-    simulation = Sim2Sim(model, policy, command, command_frame, args.base_height)
+    simulation = Sim2Sim(
+        model,
+        policy,
+        command,
+        command_frame,
+        args.base_height,
+        1.0,
+    )
     keyboard = KeyboardTargetController(args.keyboard_step)
     print_base_pose_summary(simulation, prefix="[sim2sim] 初始位姿")
 
@@ -1057,6 +1077,7 @@ def run(args: argparse.Namespace) -> None:
                     f"t={simulation.data.time:7.2f}s  base_z={base_z:6.3f}  "
                     f"EE误差={pos_error:6.3f}m/{rot_error:6.3f}rad  "
                     f"|action|max={np.max(np.abs(simulation.last_action)):6.3f}"
+                    f"  arm_sat={np.max(simulation.torque_saturation_counts[ARM_IDS]) / max(simulation.torque_samples, 1) * 100:5.1f}%"
                 )
                 print_base_pose_summary(simulation, prefix="[pose]")
             if not args.no_realtime:
@@ -1094,6 +1115,8 @@ def run(args: argparse.Namespace) -> None:
     print(
         f"[sim2sim] 结束：最终误差={pos_error:.4f} m / {rot_error:.4f} rad"
     )
+    arm_sat = simulation.torque_saturation_counts[ARM_IDS] / max(simulation.torque_samples, 1) * 100.0
+    print(f"[sim2sim] J1-J6 torque saturation: {dict(zip(ARM_NAMES, arm_sat.round(2)))} %")
 
 
 def main() -> int:
