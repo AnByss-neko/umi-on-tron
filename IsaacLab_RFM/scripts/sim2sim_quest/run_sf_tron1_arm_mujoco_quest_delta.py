@@ -60,13 +60,13 @@ DEFAULT_TRAJECTORY = Path("/home/phi5090ii/UMI-ON-TRON/data/pushing.pkl")
 DEFAULT_QUEST_BRIDGE = Path(
     "/home/phi5090ii/steamvr/build/quest_controller_bridge"
 )
-# Training now tracks the fixed UMI gripper-base frame eef_link directly.
-# Do not apply the old link6->tip transform during sim2sim playback.
+# Training tracks eef_link 0.15 m forward along the link6 X axis.
+# Do not add the same offset again during trajectory conversion.
 TIP_OFFSET_POS = np.zeros(3, dtype=np.float64)
 TIP_OFFSET_RPY = (0.0, 0.0, 0.0)
 EEF_SITE_NAME = "eef_link"
-EEF_SITE_POS = "0.0999414 0.0000388 0.0767217"
-EEF_SITE_QUAT = "0.99144482142 0 0.130526495702 0"
+EEF_SITE_POS = "0.15 0 0"
+EEF_SITE_QUAT = "1 0 0 0"
 
 # OpenVR is X-right, Y-up, Z-backward. The robot base convention used here is
 # X-forward, Y-left, Z-up. This is a proper rotation (determinant +1).
@@ -82,20 +82,20 @@ ROBOT_FROM_OPENVR = np.array(
 # This order must match PointfootCfg.init_state.joint_names and the training
 # articulation order. It is intentionally not MuJoCo's internal joint order.
 JOINT_NAMES = (
+    "abad_L_Joint",
+    "abad_R_Joint",
+    "hip_L_Joint",
+    "hip_R_Joint",
+    "knee_L_Joint",
+    "knee_R_Joint",
     "J1",
+    "ankle_L_Joint",
+    "ankle_R_Joint",
     "J2",
     "J3",
     "J4",
     "J5",
     "J6",
-    "abad_L_Joint",
-    "hip_L_Joint",
-    "knee_L_Joint",
-    "ankle_L_Joint",
-    "abad_R_Joint",
-    "hip_R_Joint",
-    "knee_R_Joint",
-    "ankle_R_Joint",
 )
 LEG_NAMES = (
     "abad_L_Joint",
@@ -111,21 +111,21 @@ ARM_NAMES = ("J1", "J2", "J3", "J4", "J5", "J6")
 LEG_IDS = np.array([JOINT_NAMES.index(name) for name in LEG_NAMES], dtype=int)
 ARM_IDS = np.array([JOINT_NAMES.index(name) for name in ARM_NAMES], dtype=int)
 DEFAULT_JOINT_POS = np.array(
-    [0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0],
     dtype=np.float64,
 )
 
 # IsaacLab actuator gains used by LIMX_SF_TRON1A_ARM.
 KP = np.array(
-    [18.0, 18.0, 18.0, 4.0, 4.0, 4.0, 40.0, 40.0, 40.0, 45.0, 40.0, 40.0, 40.0, 45.0],
+    [40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 18.0, 45.0, 45.0, 18.0, 18.0, 4.0, 4.0, 4.0],
     dtype=np.float64,
 )
 KD = np.array(
-    [1.0, 1.0, 1.0, 0.5, 0.5, 0.5, 1.8, 1.8, 1.8, 0.8, 1.8, 1.8, 1.8, 0.8],
+    [1.8, 1.8, 1.8, 1.8, 1.8, 1.8, 1.0, 0.8, 0.8, 1.0, 1.0, 0.5, 0.5, 0.5],
     dtype=np.float64,
 )
 TORQUE_LIMIT = np.array(
-    [18.0, 18.0, 18.0, 3.0, 3.0, 3.0, 80.0, 80.0, 80.0, 40.0, 80.0, 80.0, 80.0, 40.0],
+    [80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 18.0, 40.0, 40.0, 18.0, 18.0, 3.0, 3.0, 3.0],
     dtype=np.float64,
 )
 
@@ -512,9 +512,9 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
             "type": "2d",
             "builtin": "checker",
             "mark": "edge",
-            "rgb1": "0.12 0.25 0.38",
-            "rgb2": "0.24 0.42 0.58",
-            "markrgb": "0.55 0.68 0.78",
+            "rgb1": "0.10 0.22 0.36",
+            "rgb2": "0.22 0.40 0.58",
+            "markrgb": "0.60 0.72 0.82",
             "width": "512",
             "height": "512",
         },
@@ -527,7 +527,7 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
             "texture": "sim2sim_checker_texture",
             "texrepeat": "5 5",
             "texuniform": "true",
-            "reflectance": "0.15",
+            "reflectance": "0.25",
         },
     )
 
@@ -537,7 +537,8 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
     link6_body = worldbody.find(".//body[@name='link6']")
     if link6_body is None:
         raise ValueError("MJCF has no link6 body for eef_link site attachment")
-    if link6_body.find(f"./site[@name='{EEF_SITE_NAME}']") is None:
+    eef_site = link6_body.find(f"./site[@name='{EEF_SITE_NAME}']")
+    if eef_site is None:
         ET.SubElement(
             link6_body,
             "site",
@@ -550,6 +551,11 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
                 "group": "0",
             },
         )
+    else:
+        # Match the eef_link offset used by the IsaacLab training URDF.
+        eef_site.set("pos", EEF_SITE_POS)
+        eef_site.set("quat", EEF_SITE_QUAT)
+        eef_site.set("rgba", "0 0 0 0")
     worldbody.insert(
         0,
         ET.Element(
@@ -729,10 +735,11 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
         ("assembly_DAS_Controller_V3_with_flange_link5", SIM_GRIPPER_JOINT_NAMES[4], 0.0, 0.925),
         ("assembly_DAS_Controller_V3_with_flange_link6", SIM_GRIPPER_JOINT_NAMES[5], -0.925, 0.0),
     )
+    available_gripper_joint_names: list[str] = []
     for body_name, joint_name, lower, upper in gripper_joint_specs:
         body = worldbody.find(f".//body[@name='{body_name}']")
         if body is None:
-            raise ValueError(f"Gripper body is missing from MJCF: {body_name}")
+            continue
         joint = ET.Element(
             "joint",
             {
@@ -747,6 +754,7 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
         )
         # Keep the conventional inertial -> joint -> geom ordering.
         body.insert(1 if body.find("inertial") is not None else 0, joint)
+        available_gripper_joint_names.append(joint_name)
 
     equality = root.find("equality")
     if equality is None:
@@ -755,6 +763,11 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
         SIM_GRIPPER_JOINT_NAMES[1:],
         SIM_GRIPPER_JOINT_MULTIPLIERS[1:],
     ):
+        if (
+            SIM_GRIPPER_JOINT_NAMES[0] not in available_gripper_joint_names
+            or joint_name not in available_gripper_joint_names
+        ):
+            continue
         ET.SubElement(
             equality,
             "joint",
@@ -773,7 +786,8 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
     contact = root.find("contact")
     if contact is None:
         contact = ET.SubElement(root, "contact")
-    gripper_bodies = (
+    gripper_bodies = tuple(
+        body_name for body_name in (
         "assembly_DAS_Controller_V3_with_flange",
         "assembly_DAS_Controller_V3_with_flange_link1",
         "assembly_DAS_Controller_V3_with_flange_link2",
@@ -781,6 +795,7 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
         "assembly_DAS_Controller_V3_with_flange_link4",
         "assembly_DAS_Controller_V3_with_flange_link5",
         "assembly_DAS_Controller_V3_with_flange_link6",
+        ) if worldbody.find(f".//body[@name='{body_name}']") is not None
     )
     for first_index, first_body in enumerate(gripper_bodies):
         for second_body in gripper_bodies[first_index + 1 :]:
@@ -793,19 +808,20 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
     actuator = root.find("actuator")
     if actuator is None:
         actuator = ET.SubElement(root, "actuator")
-    ET.SubElement(
-        actuator,
-        "position",
-        {
-            "name": SIM_GRIPPER_ACTUATOR_NAME,
-            "joint": SIM_GRIPPER_JOINT_NAMES[0],
-            "kp": "20",
-            "ctrllimited": "true",
-            "ctrlrange": f"0 {SIM_GRIPPER_MAX_ANGLE}",
-            "forcelimited": "true",
-            "forcerange": "-10 10",
-        },
-    )
+    if SIM_GRIPPER_JOINT_NAMES[0] in available_gripper_joint_names:
+        ET.SubElement(
+            actuator,
+            "position",
+            {
+                "name": SIM_GRIPPER_ACTUATOR_NAME,
+                "joint": SIM_GRIPPER_JOINT_NAMES[0],
+                "kp": "20",
+                "ctrllimited": "true",
+                "ctrlrange": f"0 {SIM_GRIPPER_MAX_ANGLE}",
+                "forcelimited": "true",
+                "forcerange": "-10 10",
+            },
+        )
 
     xml = ET.tostring(root, encoding="unicode")
     return mujoco.MjModel.from_xml_string(xml)
@@ -1161,6 +1177,7 @@ class Sim2Sim:
         base_height: float,
         arm_max_step: float,
         max_leg_step: float,
+        se3_decrease_velocity: float,
     ):
         self.model = model
         self.data = mujoco.MjData(model)
@@ -1174,6 +1191,7 @@ class Sim2Sim:
             raise ValueError("--max-leg-step must be finite and non-negative")
         self.arm_max_step = float(arm_max_step)
         self.max_leg_step = float(max_leg_step)
+        self.se3_decrease_velocity = float(se3_decrease_velocity)
 
         self.joint_qpos_adr = np.array([model.joint(name).qposadr[0] for name in JOINT_NAMES], dtype=int)
         self.joint_dof_adr = np.array([model.joint(name).dofadr[0] for name in JOINT_NAMES], dtype=int)
@@ -1188,12 +1206,11 @@ class Sim2Sim:
             mujoco.mjtObj.mjOBJ_ACTUATOR,
             SIM_GRIPPER_ACTUATOR_NAME,
         )
-        self.gripper_joint_qpos_adr = np.array(
-            [model.joint(name).qposadr[0] for name in SIM_GRIPPER_JOINT_NAMES],
-            dtype=int,
+        self.gripper_joint_qpos_adr = (
+            np.array([model.joint(name).qposadr[0] for name in SIM_GRIPPER_JOINT_NAMES], dtype=int)
+            if self.gripper_actuator_id >= 0
+            else np.empty(0, dtype=int)
         )
-        if self.gripper_actuator_id < 0:
-            raise ValueError("Simulation gripper actuators are missing from the MJCF")
         self.gripper_trigger = 0.0
         self.gripper_target = 0.0
 
@@ -1228,6 +1245,8 @@ class Sim2Sim:
         self.effective_action = np.zeros(ACTION_DIM, dtype=np.float64)
         self.last_action = np.zeros(ACTION_DIM, dtype=np.float64)
         self.last_torque = np.zeros(ACTION_DIM, dtype=np.float64)
+        self.torque_saturation_counts = np.zeros(ACTION_DIM, dtype=np.int64)
+        self.torque_samples = 0
         self.raw_desired_position = DEFAULT_JOINT_POS.copy()
         self.policy_desired_position = DEFAULT_JOINT_POS.copy()
         self.desired_position = DEFAULT_JOINT_POS.copy()
@@ -1247,6 +1266,7 @@ class Sim2Sim:
         return position, rotation
 
     def ee_pose_base(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return the EE pose expressed entirely in the robot base frame."""
         base_position, base_rotation = self.base_pose()
         ee_position_world = self.data.site_xpos[self.ee_site_id]
         ee_rotation_world = self.data.site_xmat[self.ee_site_id].reshape(3, 3)
@@ -1255,6 +1275,7 @@ class Sim2Sim:
         return position, rotation
 
     def target_pose_base(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return the target pose expressed entirely in the robot base frame."""
         if self.command_frame == "base":
             return self.target_position, self.target_rotation
         base_position, base_rotation = self.base_pose()
@@ -1370,6 +1391,8 @@ class Sim2Sim:
 
     def gripper_position(self) -> float:
         """Return the simulated driver-joint angle in radians."""
+        if self.gripper_joint_qpos_adr.size == 0:
+            return 0.0
         return float(self.data.qpos[self.gripper_joint_qpos_adr[0]])
 
     def infer(self) -> None:
@@ -1377,17 +1400,19 @@ class Sim2Sim:
         self.history.append(contact_obs)
         history = np.stack(self.history, axis=0)
         self.raw_action = self.policy(self.policy_observation(), history)
-        self.se3_distance_reference = max(0.0, self.se3_distance_reference - POLICY_DT)
+        self.se3_distance_reference = max(
+            0.0,
+            self.se3_distance_reference - self.se3_decrease_velocity * POLICY_DT,
+        )
 
     def apply_pd(self, *, policy_updated: bool = False) -> None:
         position, velocity = self.joint_state()
         if policy_updated:
-            # Same torque-aware action clamp used by SolefootController.cpp.
-            action_min = position - DEFAULT_JOINT_POS + (KD * velocity - TORQUE_LIMIT) / KP
-            action_max = position - DEFAULT_JOINT_POS + (KD * velocity + TORQUE_LIMIT) / KP
-            self.effective_action = np.clip(self.raw_action, action_min, action_max)
+            # Match Isaac Lab JointPositionActionCfg: the raw actor action is the
+            # position-target offset. Effort limiting happens only after PD.
+            self.effective_action = self.raw_action.copy()
             self.raw_desired_position = DEFAULT_JOINT_POS + self.raw_action
-            self.policy_desired_position = DEFAULT_JOINT_POS + self.effective_action
+            self.policy_desired_position = self.raw_desired_position.copy()
 
             command = self.policy_desired_position.copy()
             if self.arm_max_step > 0.0:
@@ -1405,16 +1430,18 @@ class Sim2Sim:
             self.desired_position = command
             self.policy_command_step = command - self._previous_policy_command
             self._previous_policy_command = command.copy()
-            # The policy observes the command that was actually applied, just
-            # like record_applied_targets() in the real deployment script.
-            self.last_action = command - DEFAULT_JOINT_POS
+            # Isaac Lab mdp.last_action is the previous raw policy action.
+            self.last_action = self.raw_action.copy()
 
-        torque = KP * (self.desired_position - position) - KD * velocity
-        torque = np.clip(torque, -TORQUE_LIMIT, TORQUE_LIMIT)
+        unclipped_torque = KP * (self.desired_position - position) - KD * velocity
+        self.torque_saturation_counts += np.abs(unclipped_torque) >= TORQUE_LIMIT
+        self.torque_samples += 1
+        torque = np.clip(unclipped_torque, -TORQUE_LIMIT, TORQUE_LIMIT)
 
         self.data.ctrl[:] = 0.0
         self.data.ctrl[self.motor_ids] = torque
-        self.data.ctrl[self.gripper_actuator_id] = self.gripper_target
+        if self.gripper_actuator_id >= 0:
+            self.data.ctrl[self.gripper_actuator_id] = self.gripper_target
         self.last_torque = torque
 
     def step(self, physics_step: int) -> None:
@@ -1491,6 +1518,7 @@ def run(args: argparse.Namespace) -> None:
         args.base_height,
         args.arm_max_step,
         args.max_leg_step,
+        1.0,
     )
     initial_ee_position, initial_ee_rotation = simulation.ee_pose_base()
     simulation.set_target(
@@ -1659,6 +1687,7 @@ def run(args: argparse.Namespace) -> None:
                     f"base_z={base_z:6.3f}  "
                     f"EE误差={pos_error:6.3f}m/{rot_error:6.3f}rad  "
                     f"|action|max={np.max(np.abs(simulation.last_action)):6.3f}  "
+                    f"arm_sat={np.max(simulation.torque_saturation_counts[ARM_IDS]) / max(simulation.torque_samples, 1) * 100:5.1f}%  "
                     f"target_xyz={target_position_base.round(3).tolist()}  "
                     f"target_rpy={target_rpy.round(3).tolist()}  "
                     f"trigger={simulation.gripper_trigger:.2f}  "
@@ -1717,6 +1746,8 @@ def run(args: argparse.Namespace) -> None:
         f"[sim2sim] 结束：EE(base)={ee_position.tolist()}, "
         f"最终误差={pos_error:.4f} m / {rot_error:.4f} rad"
     )
+    arm_sat = simulation.torque_saturation_counts[ARM_IDS] / max(simulation.torque_samples, 1) * 100.0
+    print(f"[sim2sim] J1-J6 torque saturation: {dict(zip(ARM_NAMES, arm_sat.round(2)))} %")
 
 
 def main() -> int:
