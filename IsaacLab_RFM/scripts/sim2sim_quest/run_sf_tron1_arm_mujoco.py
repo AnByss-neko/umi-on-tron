@@ -50,7 +50,7 @@ DEFAULT_TRAJECTORY = Path("/home/phi5090ii/UMI-ON-TRON/data/pushing.pkl")
 TIP_OFFSET_POS = np.zeros(3, dtype=np.float64)
 TIP_OFFSET_RPY = (0.0, 0.0, 0.0)
 EEF_SITE_NAME = "eef_link"
-EEF_SITE_POS = "0.0999414 0.0000388 0.0767217"
+EEF_SITE_POS = "0.15 0 0"
 EEF_SITE_QUAT = "0.99144482142 0 0.130526495702 0"
 
 # This order must match PointfootCfg.init_state.joint_names and the training
