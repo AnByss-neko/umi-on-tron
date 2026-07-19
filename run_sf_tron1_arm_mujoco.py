@@ -45,13 +45,13 @@ DEPLOYED_MODEL_DIR = (
     "pointfoot/SF_TRON1A_ARX5ARM/policy"
 )
 DEFAULT_TRAJECTORY = Path("/home/phi5090ii/UMI-ON-TRON/data/pushing.pkl")
-# Training now tracks the fixed UMI gripper-base frame eef_link directly.
-# Do not apply the old link6->tip transform during sim2sim playback.
+# Training tracks eef_link 0.15 m forward along the link6 X axis.
+# Keep trajectory conversion free of an additional offset to avoid applying it twice.
 TIP_OFFSET_POS = np.zeros(3, dtype=np.float64)
 TIP_OFFSET_RPY = (0.0, 0.0, 0.0)
 EEF_SITE_NAME = "eef_link"
-EEF_SITE_POS = "0.0999414 0.0000388 0.0767217"
-EEF_SITE_QUAT = "0.99144482142 0 0.130526495702 0"
+EEF_SITE_POS = "0.15 0 0"
+EEF_SITE_QUAT = "1 0 0 0"
 
 # This order must match IsaacLab's articulation/action order. It is intentionally
 # not MuJoCo's internal joint order.
@@ -71,6 +71,8 @@ JOINT_NAMES = (
     "J5",
     "J6",
 )
+ARM_NAMES = ("J1", "J2", "J3", "J4", "J5", "J6")
+ARM_IDS = np.array([JOINT_NAMES.index(name) for name in ARM_NAMES], dtype=int)
 DEFAULT_JOINT_POS = np.array(
     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0],
     dtype=np.float64,
@@ -100,6 +102,16 @@ HISTORY_LENGTH = 10
 OBS_DIM = 65
 CONTACT_OBS_DIM = 55
 ACTION_DIM = 14
+# Compact coordinate-frame markers: thin shafts and small endpoint dots keep
+# both EE and target frames readable without covering the gripper.
+AXIS_MARKER_LENGTH = 0.11
+AXIS_MARKER_RADIUS = 0.003
+AXIS_MARKER_TIP_RADIUS = 0.006
+AXIS_MARKERS = (
+    ("x", np.array([1.0, 0.0, 0.0]), "1 0 0"),
+    ("y", np.array([0.0, 1.0, 0.0]), "0 1 0"),
+    ("z", np.array([0.0, 0.0, 1.0]), "0 0.25 1"),
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -237,6 +249,113 @@ def rotation_from_rpy(roll: float, pitch: float, yaw: float) -> np.ndarray:
 def rotation_angle(rotation: np.ndarray) -> float:
     cosine = np.clip((np.trace(rotation) - 1.0) * 0.5, -1.0, 1.0)
     return float(math.acos(float(cosine)))
+
+
+def quat_from_rotation(rotation: np.ndarray) -> np.ndarray:
+    """Convert a 3x3 rotation matrix to a MuJoCo wxyz quaternion."""
+    rotation = np.asarray(rotation, dtype=np.float64)
+    trace = float(np.trace(rotation))
+    if trace > 0.0:
+        scale = math.sqrt(trace + 1.0) * 2.0
+        return np.array(
+            [
+                0.25 * scale,
+                (rotation[2, 1] - rotation[1, 2]) / scale,
+                (rotation[0, 2] - rotation[2, 0]) / scale,
+                (rotation[1, 0] - rotation[0, 1]) / scale,
+            ],
+            dtype=np.float64,
+        )
+    if rotation[0, 0] > rotation[1, 1] and rotation[0, 0] > rotation[2, 2]:
+        scale = math.sqrt(1.0 + rotation[0, 0] - rotation[1, 1] - rotation[2, 2]) * 2.0
+        return np.array(
+            [
+                (rotation[2, 1] - rotation[1, 2]) / scale,
+                0.25 * scale,
+                (rotation[0, 1] + rotation[1, 0]) / scale,
+                (rotation[0, 2] + rotation[2, 0]) / scale,
+            ],
+            dtype=np.float64,
+        )
+    if rotation[1, 1] > rotation[2, 2]:
+        scale = math.sqrt(1.0 + rotation[1, 1] - rotation[0, 0] - rotation[2, 2]) * 2.0
+        return np.array(
+            [
+                (rotation[0, 2] - rotation[2, 0]) / scale,
+                (rotation[0, 1] + rotation[1, 0]) / scale,
+                0.25 * scale,
+                (rotation[1, 2] + rotation[2, 1]) / scale,
+            ],
+            dtype=np.float64,
+        )
+    scale = math.sqrt(1.0 + rotation[2, 2] - rotation[0, 0] - rotation[1, 1]) * 2.0
+    return np.array(
+        [
+            (rotation[1, 0] - rotation[0, 1]) / scale,
+            (rotation[0, 2] + rotation[2, 0]) / scale,
+            (rotation[1, 2] + rotation[2, 1]) / scale,
+            0.25 * scale,
+        ],
+        dtype=np.float64,
+    )
+
+
+def quat_with_local_x(direction: np.ndarray) -> np.ndarray:
+    """Quaternion for a marker whose local +X axis points along direction."""
+    x_axis = np.asarray(direction, dtype=np.float64)
+    x_axis /= np.linalg.norm(x_axis)
+    reference = np.array([0.0, 0.0, 1.0])
+    if abs(float(np.dot(x_axis, reference))) > 0.95:
+        reference = np.array([0.0, 1.0, 0.0])
+    y_axis = np.cross(reference, x_axis)
+    y_axis /= np.linalg.norm(y_axis)
+    z_axis = np.cross(x_axis, y_axis)
+    rotation = np.column_stack((x_axis, y_axis, z_axis))
+    return quat_from_rotation(rotation)
+
+
+def add_axis_sites(parent: ET.Element, prefix: str, alpha: str) -> None:
+    axis_quats = {
+        "x": "1 0 0 0",
+        "y": "0.70710678 0 0 0.70710678",
+        "z": "0.70710678 0 -0.70710678 0",
+    }
+    axis_positions = {
+        "x": f"{AXIS_MARKER_LENGTH * 0.5:g} 0 0",
+        "y": f"0 {AXIS_MARKER_LENGTH * 0.5:g} 0",
+        "z": f"0 0 {AXIS_MARKER_LENGTH * 0.5:g}",
+    }
+    tip_positions = {
+        "x": f"{AXIS_MARKER_LENGTH:g} 0 0",
+        "y": f"0 {AXIS_MARKER_LENGTH:g} 0",
+        "z": f"0 0 {AXIS_MARKER_LENGTH:g}",
+    }
+    for axis_name, _, color in AXIS_MARKERS:
+        ET.SubElement(
+            parent,
+            "site",
+            {
+                "name": f"{prefix}_{axis_name}_line",
+                "type": "box",
+                "pos": axis_positions[axis_name],
+                "quat": axis_quats[axis_name],
+                "size": f"{AXIS_MARKER_LENGTH * 0.5:g} {AXIS_MARKER_RADIUS:g} {AXIS_MARKER_RADIUS:g}",
+                "rgba": f"{color} {alpha}",
+                "group": "0",
+            },
+        )
+        ET.SubElement(
+            parent,
+            "site",
+            {
+                "name": f"{prefix}_{axis_name}_tip",
+                "type": "sphere",
+                "pos": tip_positions[axis_name],
+                "size": f"{AXIS_MARKER_TIP_RADIUS:g}",
+                "rgba": f"{color} {alpha}",
+                "group": "0",
+            },
+        )
 
 
 def rotation_from_axis_angle(axis_angle: np.ndarray) -> np.ndarray:
@@ -397,19 +516,31 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
     link6_body = worldbody.find(".//body[@name='link6']")
     if link6_body is None:
         raise ValueError("MJCF has no link6 body for eef_link site attachment")
-    if link6_body.find(f"./site[@name='{EEF_SITE_NAME}']") is None:
-        ET.SubElement(
+    eef_site = link6_body.find(f"./site[@name='{EEF_SITE_NAME}']")
+    if eef_site is None:
+        eef_site = ET.SubElement(
             link6_body,
             "site",
+            {"name": EEF_SITE_NAME},
+        )
+    # Override a pre-existing site as well: older MJCF files contain the old
+    # gripper-base offset and a visible yellow marker at this name.
+    eef_site.set("pos", EEF_SITE_POS)
+    eef_site.set("quat", EEF_SITE_QUAT)
+    eef_site.set("size", "0.001")
+    eef_site.set("rgba", "0 0 0 0")
+    eef_site.set("group", "0")
+    if link6_body.find("./body[@name='eef_axis_frame']") is None:
+        eef_axis_frame = ET.SubElement(
+            link6_body,
+            "body",
             {
-                "name": EEF_SITE_NAME,
+                "name": "eef_axis_frame",
                 "pos": EEF_SITE_POS,
                 "quat": EEF_SITE_QUAT,
-                "size": "0.012",
-                "rgba": "1 0.8 0.05 0.9",
-                "group": "0",
             },
         )
+        add_axis_sites(eef_axis_frame, "ee_axis", "1.0")
     worldbody.insert(
         0,
         ET.Element(
@@ -433,20 +564,29 @@ def load_sim_model(mjcf_path: Path) -> mujoco.MjModel:
             {"name": "sim2sim_light", "pos": "0 -1 3", "dir": "0 0 -1", "directional": "true"},
         ),
     )
-    worldbody.insert(
-        2,
-        ET.Element(
-            "site",
-            {
-                "name": "command_target",
-                "type": "sphere",
-                "pos": "0.15 0 1",
-                "size": "0.035",
-                "rgba": "1 0.1 0.1 0.8",
-                "group": "0",
-            },
-        ),
+    target_axis_frame = ET.Element(
+        "body",
+        {
+            "name": "target_axis_frame",
+            "mocap": "true",
+            "pos": "0.15 0 1",
+            "quat": "1 0 0 0",
+        },
     )
+    ET.SubElement(
+        target_axis_frame,
+        "site",
+        {
+            "name": "command_target",
+            "type": "sphere",
+            "pos": "0 0 0",
+            "size": "0.012",
+            "rgba": "1 0.1 0.1 0.9",
+            "group": "0",
+        },
+    )
+    add_axis_sites(target_axis_frame, "target_axis", "0.8")
+    worldbody.insert(2, target_axis_frame)
     xml = ET.tostring(root, encoding="unicode")
     return mujoco.MjModel.from_xml_string(xml)
 
@@ -573,6 +713,7 @@ class Sim2Sim:
         command: np.ndarray,
         command_frame: str,
         base_height: float,
+        se3_decrease_velocity: float,
     ):
         self.model = model
         self.data = mujoco.MjData(model)
@@ -580,6 +721,7 @@ class Sim2Sim:
         self.command_frame = command_frame
         self.target_position = command[:3].copy()
         self.target_rotation = rotation_from_rpy(*command[3:])
+        self.se3_decrease_velocity = float(se3_decrease_velocity)
 
         self.joint_qpos_adr = np.array([model.joint(name).qposadr[0] for name in JOINT_NAMES], dtype=int)
         self.joint_dof_adr = np.array([model.joint(name).dofadr[0] for name in JOINT_NAMES], dtype=int)
@@ -593,8 +735,17 @@ class Sim2Sim:
         self.base_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base_Link")
         self.ee_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, EEF_SITE_NAME)
         self.target_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "command_target")
+        self.target_axis_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "target_axis_frame")
+        self.target_mocap_id = int(model.body_mocapid[self.target_axis_body_id])
         self.imu_sensor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_gyro")
-        if min(self.base_body_id, self.ee_site_id, self.target_site_id, self.imu_sensor_id) < 0:
+        if min(
+            self.base_body_id,
+            self.ee_site_id,
+            self.target_site_id,
+            self.target_axis_body_id,
+            self.target_mocap_id,
+            self.imu_sensor_id,
+        ) < 0:
             raise ValueError("Required base/EE/IMU/target elements are missing")
 
         mujoco.mj_resetData(model, self.data)
@@ -608,6 +759,8 @@ class Sim2Sim:
         self.raw_action = np.zeros(ACTION_DIM, dtype=np.float64)
         self.last_action = np.zeros(ACTION_DIM, dtype=np.float64)
         self.last_torque = np.zeros(ACTION_DIM, dtype=np.float64)
+        self.torque_saturation_counts = np.zeros(ACTION_DIM, dtype=np.int64)
+        self.torque_samples = 0
         self.history: deque[np.ndarray] = deque(maxlen=HISTORY_LENGTH)
         self.se3_distance_reference = self._initial_se3_distance()
         first_contact_obs = self.contact_observation()
@@ -713,8 +866,10 @@ class Sim2Sim:
         )
 
     def _update_target_marker(self) -> None:
-        target_position, _ = self.target_pose_world()
-        self.model.site_pos[self.target_site_id] = target_position
+        target_position, target_rotation = self.target_pose_world()
+        self.data.mocap_pos[self.target_mocap_id] = target_position
+        self.data.mocap_quat[self.target_mocap_id] = quat_from_rotation(target_rotation)
+        mujoco.mj_forward(self.model, self.data)
 
     def translate_target(self, delta: np.ndarray) -> None:
         """Translate the target in the selected command frame."""
@@ -740,21 +895,25 @@ class Sim2Sim:
         self.history.append(contact_obs)
         history = np.stack(self.history, axis=0)
         self.raw_action = self.policy(self.policy_observation(), history)
-        self.se3_distance_reference = max(0.0, self.se3_distance_reference - POLICY_DT)
+        self.se3_distance_reference = max(
+            0.0,
+            self.se3_distance_reference - self.se3_decrease_velocity * POLICY_DT,
+        )
 
     def apply_pd(self) -> None:
         position, velocity = self.joint_state()
-        # Same torque-aware action clamp used by SolefootController.cpp.
-        action_min = position - DEFAULT_JOINT_POS + (KD * velocity - TORQUE_LIMIT) / KP
-        action_max = position - DEFAULT_JOINT_POS + (KD * velocity + TORQUE_LIMIT) / KP
-        effective_action = np.clip(self.raw_action, action_min, action_max)
-        desired_position = DEFAULT_JOINT_POS + effective_action
-        torque = KP * (desired_position - position) - KD * velocity
-        torque = np.clip(torque, -TORQUE_LIMIT, TORQUE_LIMIT)
+        # Match Isaac Lab JointPositionActionCfg. The raw action is the joint
+        # position-target offset; only the resulting PD effort is clipped.
+        desired_position = DEFAULT_JOINT_POS + self.raw_action
+        unclipped_torque = KP * (desired_position - position) - KD * velocity
+        self.torque_saturation_counts += np.abs(unclipped_torque) >= TORQUE_LIMIT
+        self.torque_samples += 1
+        torque = np.clip(unclipped_torque, -TORQUE_LIMIT, TORQUE_LIMIT)
 
         self.data.ctrl[:] = 0.0
         self.data.ctrl[self.motor_ids] = torque
-        self.last_action = effective_action
+        # IsaacLab mdp.last_action is the previous raw policy action.
+        self.last_action = self.raw_action.copy()
         self.last_torque = torque
 
     def step(self, physics_step: int) -> None:
@@ -789,6 +948,28 @@ def configure_viewer(viewer_handle, base_body_id: int, track_robot: bool) -> Non
     viewer_handle.cam.elevation = -18.0
     viewer_handle.opt.geomgroup[2] = 1
     viewer_handle.opt.geomgroup[3] = 0
+    viewer_handle.opt.sitegroup[0] = 1
+
+
+def format_vector(vector: np.ndarray) -> str:
+    return "[" + ", ".join(f"{value: .3f}" for value in np.asarray(vector)) + "]"
+
+
+def format_pose_axes(label: str, position: np.ndarray, rotation: np.ndarray) -> str:
+    return (
+        f"{label}: xyz={format_vector(position)}  "
+        f"x_axis={format_vector(rotation[:, 0])}  "
+        f"y_axis={format_vector(rotation[:, 1])}  "
+        f"z_axis={format_vector(rotation[:, 2])}"
+    )
+
+
+def print_base_pose_summary(simulation: Sim2Sim, prefix: str = "[pose]") -> None:
+    ee_position, ee_rotation = simulation.ee_pose_base()
+    target_position, target_rotation = simulation.target_pose_base()
+    print(f"{prefix} base frame, same axes convention as training obs")
+    print("  " + format_pose_axes("EE    ", ee_position, ee_rotation))
+    print("  " + format_pose_axes("target", target_position, target_rotation))
 
 
 def run(args: argparse.Namespace) -> None:
@@ -830,8 +1011,16 @@ def run(args: argparse.Namespace) -> None:
 
     model = load_sim_model(args.mjcf)
     policy = ThreeOnnxPolicy(model_dir, args.sample_latent, rng)
-    simulation = Sim2Sim(model, policy, command, command_frame, args.base_height)
+    simulation = Sim2Sim(
+        model,
+        policy,
+        command,
+        command_frame,
+        args.base_height,
+        1.0,
+    )
     keyboard = KeyboardTargetController(args.keyboard_step)
+    print_base_pose_summary(simulation, prefix="[sim2sim] 初始位姿")
 
     if args.duration is None:
         if trajectory is None:
@@ -866,11 +1055,13 @@ def run(args: argparse.Namespace) -> None:
                         f"[keyboard] target({command_frame})="
                         f"{simulation.target_position.round(4).tolist()}"
                     )
+                    print_base_pose_summary(simulation, prefix="[keyboard]")
             elif print_target:
                 print(
                     f"[keyboard] target({command_frame})="
                     f"{simulation.target_position.round(4).tolist()}"
                 )
+                print_base_pose_summary(simulation, prefix="[keyboard]")
             if trajectory is not None and physics_step % POLICY_DECIMATION == 0:
                 trajectory.update(simulation)
             simulation.step(physics_step)
@@ -886,7 +1077,9 @@ def run(args: argparse.Namespace) -> None:
                     f"t={simulation.data.time:7.2f}s  base_z={base_z:6.3f}  "
                     f"EE误差={pos_error:6.3f}m/{rot_error:6.3f}rad  "
                     f"|action|max={np.max(np.abs(simulation.last_action)):6.3f}"
+                    f"  arm_sat={np.max(simulation.torque_saturation_counts[ARM_IDS]) / max(simulation.torque_samples, 1) * 100:5.1f}%"
                 )
+                print_base_pose_summary(simulation, prefix="[pose]")
             if not args.no_realtime:
                 deadline = wall_start + simulation.data.time
                 remaining = deadline - time.perf_counter()
@@ -918,11 +1111,12 @@ def run(args: argparse.Namespace) -> None:
         print("\n[sim2sim] 用户停止。")
 
     pos_error, rot_error = simulation.error()
-    ee_position, _ = simulation.ee_pose_base()
+    print_base_pose_summary(simulation, prefix="[sim2sim] 结束位姿")
     print(
-        f"[sim2sim] 结束：EE(base)={ee_position.tolist()}, "
-        f"最终误差={pos_error:.4f} m / {rot_error:.4f} rad"
+        f"[sim2sim] 结束：最终误差={pos_error:.4f} m / {rot_error:.4f} rad"
     )
+    arm_sat = simulation.torque_saturation_counts[ARM_IDS] / max(simulation.torque_samples, 1) * 100.0
+    print(f"[sim2sim] J1-J6 torque saturation: {dict(zip(ARM_NAMES, arm_sat.round(2)))} %")
 
 
 def main() -> int:
